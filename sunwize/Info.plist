@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Location Permissions -->
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Sunwize needs location access to track UV exposure when you're outside and monitor whether you're indoors or outdoors for accurate tracking.</string>
+	
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Sunwize needs location access to track UV exposure when you're outside.</string>
+	
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Sunwize needs continuous location access to track UV exposure in the background when you're outside.</string>
+
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>FullAccuracyUsage</key>
+		<string>Sunwize needs precise location to detect when you move indoors, outdoors, or into vehicles for accurate UV safety guidance.</string>
+	</dict>
+	
+	<!-- Camera Permission -->
+	<key>NSCameraUsageDescription</key>
+	<string>Sunwize needs camera access to capture photos of skin spots for body scan tracking.</string>
+	
+	<!-- Motion & Fitness Permission -->
+	<key>NSMotionUsageDescription</key>
+	<string>Sunwize needs motion data to help detect when you're indoors, outdoors, or in a vehicle for accurate UV exposure tracking.</string>
+	
+	<!-- Photo Library Permission -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Sunwize needs access to your photo library to select images for body scan tracking.</string>
+	
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Sunwize needs permission to save body scan photos to your photo library.</string>
+	
+	<!-- Background Modes -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	
+	<!-- Background Task Identifiers -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.sunwize.uvtracking</string>
+		<string>com.sunwize.dailymaintenance</string>
+		<string>com.sunwize.apprefresh</string>
+	</array>
+</dict>
+</plist>
