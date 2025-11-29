@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import UIKit
 
 // MARK: - Notification Manager
 @MainActor
@@ -7,6 +8,7 @@ class NotificationManager: NSObject, ObservableObject {
     static let shared = NotificationManager()
 
     @Published var isAuthorized = false
+    @Published var deviceToken: String?
     private let notificationCenter = UNUserNotificationCenter.current()
 
     private override init() {
@@ -27,10 +29,85 @@ class NotificationManager: NSObject, ObservableObject {
             await MainActor.run {
                 self.isAuthorized = granted
             }
+
+            // Register for remote notifications if permission granted
+            if granted {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+
             return granted
         } catch {
             print("Notification permission error: \(error)")
             return false
+        }
+    }
+
+    // MARK: - Push Notifications
+
+    func registerDeviceToken(_ tokenData: Data) {
+        let token = tokenData.map { String(format: "%02.2hhx", $0) }.joined()
+        self.deviceToken = token
+        print("📱 Device token registered: \(token)")
+
+        // Save to Supabase
+        Task {
+            await saveDeviceTokenToDatabase(token)
+        }
+    }
+
+    func handleRegistrationError(_ error: Error) {
+        print("❌ Failed to register for remote notifications: \(error)")
+    }
+
+    private func saveDeviceTokenToDatabase(_ token: String) async {
+        guard let userId = try? await SupabaseManager.shared.client.auth.session.user.id else {
+            print("❌ Cannot save device token: No authenticated user")
+            return
+        }
+
+        do {
+            struct PushToken: Encodable {
+                let user_id: String
+                let device_token: String
+                let updated_at: String
+            }
+
+            let tokenData = PushToken(
+                user_id: userId.uuidString,
+                device_token: token,
+                updated_at: ISO8601DateFormatter().string(from: Date())
+            )
+
+            // Upsert token (insert or update if exists)
+            try await SupabaseManager.shared.client
+                .from("push_tokens")
+                .upsert(tokenData, onConflict: "user_id,device_token")
+                .execute()
+
+            print("✅ Device token saved to database")
+        } catch {
+            print("❌ Failed to save device token: \(error)")
+        }
+    }
+
+    func removeDeviceToken() async {
+        guard let token = deviceToken,
+              let userId = try? await SupabaseManager.shared.client.auth.session.user.id else {
+            return
+        }
+
+        do {
+            try await SupabaseManager.shared.client
+                .from("push_tokens")
+                .delete()
+                .eq("user_id", value: userId.uuidString)
+                .eq("device_token", value: token)
+                .execute()
+
+            print("✅ Device token removed from database")
+            self.deviceToken = nil
+        } catch {
+            print("❌ Failed to remove device token: \(error)")
         }
     }
 
@@ -50,11 +127,9 @@ class NotificationManager: NSObject, ObservableObject {
 
         let content = UNMutableNotificationContent()
         content.title = "UV Exposure Warning"
-        content.body = String(format: "You've reached %.0f%% of your safe UV limit. Consider applying sunscreen or seeking shade.", exposureRatio * 100)
+        content.body = String(format: "You've reached %.0f%% of your safe UV limit. Consider seeking shade.", exposureRatio * 100)
         content.sound = .default
         content.categoryIdentifier = "UV_WARNING"
-
-        // Add action buttons
         content.userInfo = ["type": "uv_warning", "exposure_ratio": exposureRatio]
 
         let request = UNNotificationRequest(
@@ -65,8 +140,9 @@ class NotificationManager: NSObject, ObservableObject {
 
         do {
             try await notificationCenter.add(request)
+            print("⚠️ UV warning notification sent (\(Int(exposureRatio * 100))%)")
         } catch {
-            print("Failed to send UV warning notification: \(error)")
+            print("❌ Failed to send UV warning notification: \(error)")
         }
     }
 
@@ -76,12 +152,11 @@ class NotificationManager: NSObject, ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "⚠️ UV Exposure Danger"
         content.body = "You've exceeded your safe UV limit! Please seek shade immediately to prevent sunburn."
-        content.sound = UNNotificationSound(named: UNNotificationSoundName("alarm.caf")) // Custom sound if available
+        content.sound = UNNotificationSound(named: UNNotificationSoundName("alarm.caf"))
         content.categoryIdentifier = "UV_DANGER"
         if #available(iOS 15.0, *) {
             content.interruptionLevel = .critical
         }
-
         content.userInfo = ["type": "uv_danger", "exposure_ratio": exposureRatio]
 
         let request = UNNotificationRequest(
@@ -92,8 +167,9 @@ class NotificationManager: NSObject, ObservableObject {
 
         do {
             try await notificationCenter.add(request)
+            print("🚨 UV danger notification sent")
         } catch {
-            print("Failed to send UV danger notification: \(error)")
+            print("❌ Failed to send UV danger notification: \(error)")
         }
     }
 
@@ -107,7 +183,6 @@ class NotificationManager: NSObject, ObservableObject {
         content.body = "Great job! You've reached your daily Vitamin D target from safe sun exposure."
         content.sound = .default
         content.categoryIdentifier = "VITAMIN_D_SUCCESS"
-
         content.userInfo = ["type": "vitamin_d_target"]
 
         let request = UNNotificationRequest(
@@ -118,25 +193,62 @@ class NotificationManager: NSObject, ObservableObject {
 
         do {
             try await notificationCenter.add(request)
+            print("🎉 Vitamin D target reached notification sent")
         } catch {
-            print("Failed to send Vitamin D notification: \(error)")
+            print("❌ Failed to send Vitamin D notification: \(error)")
         }
     }
 
-    // MARK: - Body Scan Reminders
+    // MARK: - Morning UV Peak Notification
 
-    func scheduleMonthlyBodyScanReminder() async {
+    func scheduleMorningUVPeakNotification(peakUVTime: String, peakUVIndex: Double) async {
         guard isAuthorized else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = "Monthly Body Scan Reminder"
-        content.body = "It's time for your monthly body scan. Track any changes in your skin spots for early detection."
+        content.title = "☀️ Today's UV Peak"
+        content.body = String(format: "Peak UV index of %.1f expected around %@. Plan your outdoor activities accordingly.", peakUVIndex, peakUVTime)
         content.sound = .default
-        content.categoryIdentifier = "BODY_SCAN_REMINDER"
+        content.categoryIdentifier = "MORNING_UV_PEAK"
+        content.userInfo = ["type": "morning_uv_peak", "peak_time": peakUVTime, "peak_uv": peakUVIndex]
 
-        content.userInfo = ["type": "body_scan_reminder"]
+        // Schedule for 8 AM daily
+        var dateComponents = DateComponents()
+        dateComponents.hour = 8
+        dateComponents.minute = 0
 
-        // Schedule for the first day of next month at 10 AM
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+
+        let request = UNNotificationRequest(
+            identifier: "morning_uv_peak",
+            content: content,
+            trigger: trigger
+        )
+
+        do {
+            try await notificationCenter.add(request)
+            print("☀️ Morning UV peak notification scheduled for 8 AM daily")
+        } catch {
+            print("❌ Failed to schedule morning UV peak notification: \(error)")
+        }
+    }
+
+    func cancelMorningUVPeakNotification() {
+        notificationCenter.removePendingNotificationRequests(withIdentifiers: ["morning_uv_peak"])
+    }
+
+    // MARK: - Body Spot Tracker Reminders
+
+    func scheduleMonthlyBodySpotReminder() async {
+        guard isAuthorized else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Monthly Body Spot Tracker Reminder"
+        content.body = "It's time for your monthly body spot check. Track any changes in your skin spots for early detection."
+        content.sound = .default
+        content.categoryIdentifier = "BODY_SPOT_REMINDER"
+        content.userInfo = ["type": "body_spot_reminder"]
+
+        // Schedule for the first day of every month at 10 AM
         var dateComponents = DateComponents()
         dateComponents.day = 1
         dateComponents.hour = 10
@@ -145,135 +257,73 @@ class NotificationManager: NSObject, ObservableObject {
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
 
         let request = UNNotificationRequest(
-            identifier: "monthly_body_scan",
+            identifier: "monthly_body_spot",
             content: content,
             trigger: trigger
         )
 
         do {
             try await notificationCenter.add(request)
+            print("📅 Monthly body spot tracker reminder scheduled for 1st of each month at 10 AM")
         } catch {
-            print("Failed to schedule body scan reminder: \(error)")
+            print("❌ Failed to schedule body spot tracker reminder: \(error)")
         }
     }
 
-    func cancelBodyScanReminders() async {
-        notificationCenter.removePendingNotificationRequests(withIdentifiers: ["monthly_body_scan"])
-    }
-
-    // MARK: - Sunscreen Reminders
-
-    func scheduleSunscreenReapplicationReminder(after duration: TimeInterval) async {
-        guard isAuthorized else { return }
-
-        let content = UNMutableNotificationContent()
-        content.title = "Time to Reapply Sunscreen"
-        content.body = "Your sunscreen protection is wearing off. Reapply to maintain protection."
-        content.sound = .default
-        content.categoryIdentifier = "SUNSCREEN_REMINDER"
-
-        content.userInfo = ["type": "sunscreen_reminder"]
-
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: duration, repeats: false)
-
-        let request = UNNotificationRequest(
-            identifier: "sunscreen_reminder",
-            content: content,
-            trigger: trigger
-        )
-
-        do {
-            try await notificationCenter.add(request)
-        } catch {
-            print("Failed to schedule sunscreen reminder: \(error)")
-        }
-    }
-
-    func cancelSunscreenReminder() {
-        notificationCenter.removePendingNotificationRequests(withIdentifiers: ["sunscreen_reminder"])
-    }
-
-    // MARK: - Daily Summary
-
-    func sendDailySummaryNotification(totalSED: Double, vitaminDIU: Double) async {
-        guard isAuthorized else { return }
-
-        let content = UNMutableNotificationContent()
-        content.title = "Daily Sun Exposure Summary"
-        content.body = String(format: "Today: %.1f SED exposure, %.0f IU Vitamin D synthesized", totalSED, vitaminDIU)
-        content.sound = .default
-        content.categoryIdentifier = "DAILY_SUMMARY"
-
-        content.userInfo = ["type": "daily_summary", "sed": totalSED, "vitamin_d": vitaminDIU]
-
-        let request = UNNotificationRequest(
-            identifier: "daily_summary_\(dateKey())",
-            content: content,
-            trigger: nil
-        )
-
-        do {
-            try await notificationCenter.add(request)
-        } catch {
-            print("Failed to send daily summary: \(error)")
-        }
+    func cancelBodySpotReminders() {
+        notificationCenter.removePendingNotificationRequests(withIdentifiers: ["monthly_body_spot"])
     }
 
     // MARK: - Notification Categories
 
     func setupNotificationCategories() {
-        // UV Warning actions
-        let applySunscreenAction = UNNotificationAction(
-            identifier: "APPLY_SUNSCREEN",
-            title: "Apply Sunscreen",
-            options: [.foreground]
-        )
-
-        let goInsideAction = UNNotificationAction(
-            identifier: "GO_INSIDE",
-            title: "I'm Going Inside",
-            options: []
-        )
-
+        // UV Warning category (no actions needed)
         let uvWarningCategory = UNNotificationCategory(
             identifier: "UV_WARNING",
-            actions: [applySunscreenAction, goInsideAction],
+            actions: [],
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
 
+        // UV Danger category (no actions needed)
         let uvDangerCategory = UNNotificationCategory(
             identifier: "UV_DANGER",
-            actions: [goInsideAction],
+            actions: [],
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
 
-        // Body Scan Reminder actions
-        let startScanAction = UNNotificationAction(
-            identifier: "START_SCAN",
-            title: "Start Body Scan",
-            options: [.foreground]
-        )
-
-        let remindLaterAction = UNNotificationAction(
-            identifier: "REMIND_LATER",
-            title: "Remind Me Tomorrow",
-            options: []
-        )
-
-        let bodyScanCategory = UNNotificationCategory(
-            identifier: "BODY_SCAN_REMINDER",
-            actions: [startScanAction, remindLaterAction],
+        // Vitamin D Success category (no actions needed)
+        let vitaminDCategory = UNNotificationCategory(
+            identifier: "VITAMIN_D_SUCCESS",
+            actions: [],
             intentIdentifiers: [],
-            options: []
+            options: [.customDismissAction]
+        )
+
+        // Morning UV Peak category (no actions needed)
+        let morningUVCategory = UNNotificationCategory(
+            identifier: "MORNING_UV_PEAK",
+            actions: [],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        // Body Spot Tracker Reminder category (no actions needed)
+        let bodySpotCategory = UNNotificationCategory(
+            identifier: "BODY_SPOT_REMINDER",
+            actions: [],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
         )
 
         // Set categories
         notificationCenter.setNotificationCategories([
             uvWarningCategory,
             uvDangerCategory,
-            bodyScanCategory
+            vitaminDCategory,
+            morningUVCategory,
+            bodySpotCategory
         ])
     }
 
@@ -302,58 +352,8 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        // Handle notification actions
-        let actionIdentifier = response.actionIdentifier
-        let userInfo = response.notification.request.content.userInfo
-
-        Task { @MainActor in
-            switch actionIdentifier {
-            case "APPLY_SUNSCREEN":
-                // Handle sunscreen application
-                await BackgroundTaskManager.shared.applySunscreen()
-
-            case "GO_INSIDE":
-                // End UV session
-                // This would update the location mode
-                break
-
-            case "START_SCAN":
-                // Navigate to body scan tab
-                NotificationCenter.default.post(name: .navigateToBodyScan, object: nil)
-
-            case "REMIND_LATER":
-                // Schedule reminder for tomorrow
-                await scheduleBodyScanReminderTomorrow()
-
-            default:
-                break
-            }
-        }
-
+        // Handle notification tap (open app)
+        // No custom actions needed for the 4 notification types
         completionHandler()
     }
-
-    private func scheduleBodyScanReminderTomorrow() async {
-        let content = UNMutableNotificationContent()
-        content.title = "Body Scan Reminder"
-        content.body = "Don't forget to complete your body scan today."
-        content.sound = .default
-        content.categoryIdentifier = "BODY_SCAN_REMINDER"
-
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 86400, repeats: false) // 24 hours
-
-        let request = UNNotificationRequest(
-            identifier: "body_scan_tomorrow",
-            content: content,
-            trigger: trigger
-        )
-
-        try? await notificationCenter.add(request)
-    }
-}
-
-// MARK: - Notification Names
-extension Notification.Name {
-    static let navigateToBodyScan = Notification.Name("navigateToBodyScan")
-    static let navigateToUVTracking = Notification.Name("navigateToUVTracking")
 }

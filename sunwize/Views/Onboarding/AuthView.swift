@@ -149,7 +149,7 @@ struct AuthView: View {
         } message: {
             Text(errorMessage)
         }
-        .onChange(of: authService.errorMessage) { newValue in
+        .onChange(of: authService.errorMessage) { _, newValue in
             if let error = newValue {
                 errorMessage = error
                 showError = true

@@ -3,186 +3,211 @@ import SwiftUI
 struct ProfileView: View {
     @EnvironmentObject var authService: AuthenticationService
     @EnvironmentObject var profileViewModel: ProfileViewModel
-    @State private var showingEditProfile = false
+    @Binding var showingEditProfile: Bool
     @State private var showingSignOutConfirmation = false
 
     var body: some View {
-        NavigationView {
+        ZStack {
+            // Background
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
             ScrollView {
-                VStack(spacing: 20) {
-                    // Header
-                    ProfileHeaderView(profile: profileViewModel.profile)
-                        .padding(.top)
+                VStack(spacing: Spacing.lg) {
+                    // Page Header (like BodySpotView)
+                    HStack {
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            Text("Profile")
+                                .font(.title2)
+                                .fontWeight(.bold)
 
-                    // Stats Cards
-                    HStack(spacing: 16) {
-                        StatsCard(
-                            icon: "shield.fill",
-                            title: "UV Safe Streak",
-                            value: "\(profileViewModel.streaks?.uvSafeStreak ?? 0) days",
-                            color: .green
-                        )
+                            Text("Manage your account")
+                                .font(.callout)
+                                .foregroundColor(.secondary)
+                        }
 
-                        StatsCard(
-                            icon: "sparkles",
-                            title: "Vitamin D Streak",
-                            value: "\(profileViewModel.streaks?.vitaminDStreak ?? 0) days",
-                            color: .yellow
-                        )
+                        Spacer()
+
+                        Image(systemName: "person.circle.fill")
+                            .font(.title)
+                            .foregroundColor(.orange)
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, Spacing.xl)
+                    .padding(.top, Spacing.lg)
+                    .padding(.bottom, Spacing.sm)
 
-                    // Skin Profile Section
-                    VStack(alignment: .leading, spacing: 16) {
-                        Label("Skin Profile", systemImage: "sun.max.fill")
-                            .font(.headline)
-                            .padding(.horizontal)
+                    // User Info Card
+                    ProfileHeaderView(profile: profileViewModel.profile)
+                        .padding(.horizontal, Spacing.base)
 
-                        VStack(spacing: 12) {
-                            ProfileInfoRow(
-                                label: "Skin Type",
-                                value: "Type \(profileViewModel.profile.skinType)",
-                                detail: FitzpatrickSkinType(rawValue: profileViewModel.profile.skinType)?.description
+                        // Stats Cards
+                        HStack(spacing: Spacing.base) {
+                            StatsCard(
+                                icon: "shield.fill",
+                                title: "UV Safe Streak",
+                                value: "\(profileViewModel.streaks?.uvSafeStreak ?? 0) days",
+                                color: .green
                             )
 
-                            ProfileInfoRow(
-                                label: "Age",
-                                value: "\(profileViewModel.profile.age) years"
-                            )
-
-                            ProfileInfoRow(
-                                label: "MED Value",
-                                value: "\(profileViewModel.profile.med) J/m²",
-                                detail: "Personalized minimal erythemal dose"
+                            StatsCard(
+                                icon: "sparkles",
+                                title: "Vitamin D Streak",
+                                value: "\(profileViewModel.streaks?.vitaminDStreak ?? 0) days",
+                                color: .orange
                             )
                         }
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(16)
-                        .padding(.horizontal)
-                    }
+                        .padding(.horizontal, Spacing.base)
 
-                    // Feature Settings
-                    VStack(alignment: .leading, spacing: 16) {
-                        Label("Feature Settings", systemImage: "gearshape.fill")
-                            .font(.headline)
-                            .padding(.horizontal)
-
-                        VStack(spacing: 0) {
-                            FeatureToggleRow(
-                                title: "UV Tracking",
-                                description: "Monitor UV exposure when outside",
-                                icon: "sun.max.fill",
-                                isOn: Binding(
-                                    get: { profileViewModel.featureSettings?.uvTrackingEnabled ?? true },
-                                    set: { newValue in
-                                        updateFeatureSetting { settings in
-                                            settings.uvTrackingEnabled = newValue
-                                        }
-                                    }
+                        // Skin Profile Section
+                        ProfileSection(icon: "sun.max.fill", title: "Skin Profile") {
+                            VStack(spacing: 0) {
+                                ProfileInfoRow(
+                                    label: "Skin Type",
+                                    value: "Type \(profileViewModel.profile.skinType)",
+                                    detail: FitzpatrickSkinType(rawValue: profileViewModel.profile.skinType)?.description,
+                                    showChevron: false
                                 )
-                            )
 
-                            Divider().padding(.leading, 48)
+                                Divider().padding(.leading, Spacing.base)
 
-                            FeatureToggleRow(
-                                title: "Vitamin D Tracking",
-                                description: "Calculate Vitamin D synthesis",
-                                icon: "sparkles",
-                                isOn: Binding(
-                                    get: { profileViewModel.featureSettings?.vitaminDTrackingEnabled ?? true },
-                                    set: { newValue in
-                                        updateFeatureSetting { settings in
-                                            settings.vitaminDTrackingEnabled = newValue
-                                        }
-                                    }
+                                ProfileInfoRow(
+                                    label: "Age",
+                                    value: "\(profileViewModel.profile.age) years",
+                                    showChevron: false
                                 )
-                            )
 
-                            Divider().padding(.leading, 48)
+                                Divider().padding(.leading, Spacing.base)
 
-                            FeatureToggleRow(
-                                title: "Body Scan Reminders",
-                                description: "Monthly reminders for body scans",
-                                icon: "bell.fill",
-                                isOn: Binding(
-                                    get: { profileViewModel.featureSettings?.bodyScanRemindersEnabled ?? true },
-                                    set: { newValue in
-                                        updateFeatureSetting { settings in
-                                            settings.bodyScanRemindersEnabled = newValue
-                                        }
-                                        Task {
-                                            if newValue {
-                                                await NotificationManager.shared.scheduleMonthlyBodyScanReminder()
-                                            } else {
-                                                await NotificationManager.shared.cancelBodyScanReminders()
+                                ProfileInfoRow(
+                                    label: "MED Value",
+                                    value: "\(profileViewModel.profile.med) J/m²",
+                                    detail: "Personalized minimal erythemal dose",
+                                    showChevron: false
+                                )
+                            }
+                            .background(Color(.systemBackground))
+                            .cornerRadius(CornerRadius.base)
+                        }
+
+                        // Feature Settings Section
+                        ProfileSection(icon: "gearshape.fill", title: "Feature Settings") {
+                            VStack(spacing: 0) {
+                                FeatureToggleRow(
+                                    title: "UV Tracking",
+                                    description: "Monitor UV exposure when outside",
+                                    icon: "sun.max.fill",
+                                    iconColor: .orange,
+                                    isOn: Binding(
+                                        get: { profileViewModel.featureSettings?.uvTrackingEnabled ?? true },
+                                        set: { newValue in
+                                            updateFeatureSetting { settings in
+                                                settings.uvTrackingEnabled = newValue
                                             }
                                         }
-                                    }
+                                    )
                                 )
-                            )
-                        }
-                        .background(Color(.systemBackground))
-                        .cornerRadius(16)
-                        .padding(.horizontal)
-                    }
 
-                    // Actions
-                    VStack(spacing: 12) {
-                        Button(action: { showingEditProfile = true }) {
-                            HStack {
-                                Image(systemName: "person.text.rectangle")
-                                Text("Edit Profile")
+                                Divider().padding(.leading, 72)
+
+                                FeatureToggleRow(
+                                    title: "Vitamin D Tracking",
+                                    description: "Calculate Vitamin D synthesis",
+                                    icon: "sparkles",
+                                    iconColor: .yellow,
+                                    isOn: Binding(
+                                        get: { profileViewModel.featureSettings?.vitaminDTrackingEnabled ?? true },
+                                        set: { newValue in
+                                            updateFeatureSetting { settings in
+                                                settings.vitaminDTrackingEnabled = newValue
+                                            }
+                                        }
+                                    )
+                                )
+
+                                Divider().padding(.leading, 72)
+
+                                FeatureToggleRow(
+                                    title: "Body Spot Reminders",
+                                    description: "Monthly reminders for body spots",
+                                    icon: "bell.fill",
+                                    iconColor: .blue,
+                                    isOn: Binding(
+                                        get: { profileViewModel.featureSettings?.bodyScanRemindersEnabled ?? true },
+                                        set: { newValue in
+                                            updateFeatureSetting { settings in
+                                                settings.bodyScanRemindersEnabled = newValue
+                                            }
+                                            Task {
+                                                if newValue {
+                                                    await NotificationManager.shared.scheduleMonthlyBodySpotReminder()
+                                                } else {
+                                                    await NotificationManager.shared.cancelBodySpotReminders()
+                                                }
+                                            }
+                                        }
+                                    )
+                                )
                             }
-                            .font(.headline)
-                            .foregroundColor(.orange)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(12)
+                            .background(Color(.systemBackground))
+                            .cornerRadius(CornerRadius.base)
                         }
 
-                        Button(action: { showingSignOutConfirmation = true }) {
-                            HStack {
-                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                                Text("Sign Out")
+                        // Actions Section
+                        VStack(spacing: Spacing.md) {
+                            // Edit Profile Button
+                            Button(action: {
+                                withAnimation {
+                                    showingEditProfile = true
+                                }
+                            }) {
+                                HStack(spacing: Spacing.sm) {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: Typography.body, weight: .semibold))
+                                    Text("Edit Profile")
+                                        .font(.system(size: Typography.body, weight: .semibold))
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: Layout.buttonHeight)
+                                .background(Color.orange)
+                                .cornerRadius(CornerRadius.sm)
                             }
-                            .font(.headline)
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.red, lineWidth: 1)
-                            )
+
+                            // Sign Out Button
+                            Button(action: { showingSignOutConfirmation = true }) {
+                                HStack(spacing: Spacing.sm) {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                        .font(.system(size: Typography.body, weight: .semibold))
+                                    Text("Sign Out")
+                                        .font(.system(size: Typography.body, weight: .semibold))
+                                }
+                                .foregroundColor(.red)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: Layout.buttonHeight)
+                                .background(Color(.systemBackground))
+                                .cornerRadius(CornerRadius.sm)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: CornerRadius.sm)
+                                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                                )
+                            }
                         }
-                    }
-                    .padding(.horizontal)
+                        .padding(.horizontal, Spacing.base)
 
-                    // Footer
-                    VStack(spacing: 8) {
-                        Text("Sunwize v1.0.0")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        // Footer
+                        VStack(spacing: Spacing.xs) {
+                            Text("Sunwize v1.0.0")
+                                .font(.system(size: Typography.caption))
+                                .foregroundColor(.slate400)
 
-                        Text("Made with ☀️ for your skin health")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            Text("Made with care for your skin health")
+                                .font(.system(size: Typography.caption))
+                                .foregroundColor(.slate400)
+                        }
+                        .padding(.vertical, Spacing.lg)
                     }
-                    .padding(.vertical)
+                    .padding(.bottom, Spacing.xl)
                 }
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Profile")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .sheet(isPresented: $showingEditProfile) {
-            EditProfileView(profile: profileViewModel.profile) { updatedProfile in
-                Task {
-                    try? await authService.updateProfile(updatedProfile)
-                    profileViewModel.profile = updatedProfile
-                }
-            }
         }
         .alert("Sign Out", isPresented: $showingSignOutConfirmation) {
             Button("Sign Out", role: .destructive) {
@@ -207,139 +232,31 @@ struct ProfileView: View {
     }
 }
 
-// MARK: - Profile Header
-struct ProfileHeaderView: View {
-    let profile: Profile
-
-    var body: some View {
-        VStack(spacing: 16) {
-            // Avatar
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [Color.orange, Color.yellow],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 100, height: 100)
-
-                Text(profile.name.prefix(2).uppercased())
-                    .font(.system(size: 36, weight: .bold))
-                    .foregroundColor(.white)
-            }
-
-            VStack(spacing: 4) {
-                Text(profile.name)
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Text(profile.email)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                Text("Member since \(profile.createdAt, format: .dateTime.month().year())")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemGroupedBackground))
-    }
-}
-
-// MARK: - Stats Card
-struct StatsCard: View {
+// MARK: - Profile Section Header
+private struct ProfileSection<Content: View>: View {
     let icon: String
     let title: String
-    let value: String
-    let color: Color
+    @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            // Section header with SF Symbol icon
+            HStack(spacing: Spacing.sm) {
                 Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundColor(color)
-                Spacer()
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(value)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.system(size: Typography.body, weight: .semibold))
+                    .foregroundColor(.orange)
 
                 Text(title)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.system(size: Typography.headline, weight: .semibold))
+                    .foregroundColor(.textPrimary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.base)
+
+            content
         }
-        .padding()
-        .background(Color(.systemBackground))
-        .cornerRadius(16)
+        .padding(.horizontal, Spacing.base)
     }
 }
 
-// MARK: - Profile Info Row
-struct ProfileInfoRow: View {
-    let label: String
-    let value: String
-    var detail: String?
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                Text(value)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                if let detail = detail {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Spacer()
-        }
-    }
-}
-
-// MARK: - Feature Toggle Row
-struct FeatureToggleRow: View {
-    let title: String
-    let description: String
-    let icon: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(.orange)
-                .frame(width: 32)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                Text(description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .tint(.orange)
-        }
-        .padding()
-    }
-}
+// NOTE: ProfileHeaderView, StatsCard, ProfileInfoRow, FeatureToggleRow, and EditProfilePopup
+// are in Views/Components/Profile/

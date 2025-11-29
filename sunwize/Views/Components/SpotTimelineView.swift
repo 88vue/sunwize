@@ -11,47 +11,46 @@ struct SpotTimelineView: View {
         spots.sorted { $0.createdAt > $1.createdAt }
     }
 
+    @State private var dragOffset: CGFloat = 0
+
     var body: some View {
         VStack(spacing: 0) {
+            // Drag handle
+            RoundedRectangle(cornerRadius: 9999)
+                .fill(Color(.systemGray3))
+                .frame(width: Layout.dragHandleWidth, height: Layout.dragHandleHeight)
+                .padding(.top, Spacing.BottomSheet.dragHandleTop)
+                .padding(.bottom, Spacing.BottomSheet.dragHandleBottom)
+
             // Header
-            HStack {
-                Text("Spot History")
-                    .font(.headline)
-                    .fontWeight(.bold)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Spot History")
+                        .font(.system(size: Typography.title3, weight: .bold))
+                        .foregroundColor(.primary)
+
+                    Text("\(spots.count) spot\(spots.count == 1 ? "" : "s")")
+                        .font(.system(size: Typography.subheadline))
+                        .foregroundColor(.secondary)
+                }
 
                 Spacer()
 
-                HStack(spacing: 8) {
-                    Button(action: onAddNew) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                                .font(.footnote)
-                            Text("Add Log")
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.orange)
-                        .cornerRadius(20)
-                    }
-
-                    Button(action: onClose) {
-                        Image(systemName: "chevron.down")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                            .frame(width: 32, height: 32)
-                            .background(Color(.systemGray5))
-                            .cornerRadius(12)
-                    }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: Typography.footnote, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: Layout.iconButtonSize, height: Layout.iconButtonSize)
+                        .background(Color(.systemGray5))
+                        .clipShape(Circle())
                 }
             }
-            .padding()
+            .padding(.horizontal, Spacing.xl)
+            .padding(.bottom, Spacing.BottomSheet.headerBottom)
 
-            // Timeline
+            // Content - Horizontal scrolling timeline
             if spots.isEmpty {
-                VStack(spacing: 16) {
+                VStack(spacing: Spacing.base) {
                     Image(systemName: "camera.viewfinder")
                         .font(.system(size: 60))
                         .foregroundColor(.gray)
@@ -64,208 +63,112 @@ struct SpotTimelineView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-
-                    Button(action: onAddNew) {
-                        Text("Add First Scan")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding()
-                            .frame(maxWidth: 200)
-                            .background(Color.orange)
-                            .cornerRadius(12)
-                    }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(height: 120)
                 .padding()
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 16) {
-                        ForEach(Array(sortedSpots.enumerated()), id: \.element.id) { index, spot in
-                            TimelineCard(
+                    HStack(spacing: Spacing.md) {
+                        ForEach(sortedSpots, id: \.id) { spot in
+                            GridImageCard(
                                 spot: spot,
-                                isLatest: index == 0,
                                 onTap: { onSpotTap(spot) }
                             )
                         }
+                    }
+                    .padding(.horizontal, Spacing.xl)
+                }
+                .frame(height: Layout.timelineCardHeight)
+            }
 
-                        // Add new button at end
-                        Button(action: onAddNew) {
-                            VStack(spacing: 0) {
-                                // Spacer to align with cards that have badges
-                                Spacer()
-                                    .frame(height: 25)
-                                
-                                ZStack {
-                                    Circle()
-                                        .strokeBorder(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [5]))
-                                        .frame(width: 60, height: 60)
+            // Add New Photo Button
+            Button(action: onAddNew) {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: Typography.body))
 
-                                    Image(systemName: "plus")
-                                        .font(.title2)
-                                        .foregroundColor(.orange)
-                                }
-
-                                Text("Add New")
-                                    .font(.footnote)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.orange)
-                                    .lineLimit(1)
-                                    .fixedSize()
-                                    .padding(.top, 8)
-                            }
-                            .frame(width: 90)
+                    Text("Add New Photo")
+                        .font(.system(size: Typography.body, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: Layout.buttonHeight)
+                .background(Color.orange)
+                .cornerRadius(CornerRadius.base)
+            }
+            .padding(.horizontal, Spacing.xl)
+            .padding(.top, Spacing.BottomSheet.contentToButton)
+            .padding(.bottom, Spacing.BottomSheet.buttonBottom)
+        }
+        .background(Color(.systemBackground))
+        .cornerRadius(CornerRadius.lg, corners: [.topLeft, .topRight])
+        .shadow(.medium)
+        .frame(height: Layout.timelineHeight)
+        .offset(y: dragOffset)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if value.translation.height > 0 {
+                        dragOffset = value.translation.height
+                    }
+                }
+                .onEnded { value in
+                    if value.translation.height > 100 {
+                        onClose()
+                    } else {
+                        withAnimation {
+                            dragOffset = 0
                         }
                     }
-                    .padding(.horizontal)
-                    .padding(.top, 0)
-                    .padding(.bottom, 40)
                 }
-            }
-        }
+        )
     }
 }
 
-struct TimelineCard: View {
+struct GridImageCard: View {
     let spot: BodySpot
-    let isLatest: Bool
     let onTap: () -> Void
-    
-    @State private var loadedImage: UIImage?
-    @State private var isLoading = true
-    @State private var loadFailed = false
+
+    @StateObject private var imageLoader = ImageLoader()
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 0) {
-                // Latest badge - positioned above circle
-                if isLatest {
-                    Text("Latest")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.green)
-                        .cornerRadius(10)
-                        .padding(.bottom, 6)
-                } else {
-                    // Spacer to maintain alignment when no badge
-                    Spacer()
-                        .frame(height: 25)
-                }
-                
-                // Image circle
+            VStack(spacing: Spacing.sm) {
+                // Image Container
                 ZStack {
-                    if let image = loadedImage {
+                    // Background
+                    Color(.systemGray5)
+
+                    // Image
+                    if let image = imageLoader.image {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 60, height: 60)
-                            .clipShape(Circle())
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(isLatest ? Color.orange : Color(.systemGray4), lineWidth: 2)
-                            )
-                    } else if isLoading {
-                        Circle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(width: 60, height: 60)
-                            .overlay(
-                                ProgressView()
-                                    .tint(.orange)
-                            )
+                            .frame(width: Layout.thumbnailSize, height: Layout.thumbnailSize)
+                            .clipped()
+                    } else if imageLoader.isLoading {
+                        ProgressView()
+                            .tint(.orange)
+                            .frame(width: Layout.thumbnailSize, height: Layout.thumbnailSize)
                     } else {
-                        Circle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(width: 60, height: 60)
-                            .overlay(
-                                Image(systemName: loadFailed ? "exclamationmark.triangle" : "photo")
-                                    .font(.title3)
-                                    .foregroundColor(loadFailed ? .orange : .gray)
-                            )
+                        Image(systemName: imageLoader.loadFailed ? "exclamationmark.triangle" : "photo")
+                            .font(.title)
+                            .foregroundColor(imageLoader.loadFailed ? .orange : .gray)
+                            .frame(width: Layout.thumbnailSize, height: Layout.thumbnailSize)
                     }
                 }
+                .frame(width: Layout.thumbnailSize, height: Layout.thumbnailSize)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.base))
 
-                // Date labels
-                VStack(spacing: 4) {
-                    HStack(spacing: 2) {
-                        Text("\(spot.createdAt.formatted(.dateTime.day()))")
-                            .font(.system(.footnote, design: .rounded))
-                            .fontWeight(.bold)
-                        
-                        Text("\(spot.createdAt.formatted(.dateTime.month(.abbreviated)))")
-                            .font(.system(.footnote, design: .rounded))
-                            .fontWeight(.bold)
-                    }
-                    .lineLimit(1)
-                    .fixedSize()
-
-                    Text("\(spot.createdAt.formatted(.dateTime.year()))")
-                        .font(.system(.caption2, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                .padding(.top, 8)
+                // Date Label
+                Text(DateFormatters.formatMonthDay(spot.createdAt))
+                    .font(.system(size: Typography.footnote, weight: .medium))
+                    .foregroundColor(.primary)
             }
-            .frame(width: 90)
         }
         .buttonStyle(PlainButtonStyle())
         .onAppear {
-            loadImage()
-        }
-    }
-    
-    private func loadImage() {
-        guard let url = URL(string: spot.imageUrl) else {
-            isLoading = false
-            loadFailed = true
-            return
-        }
-        
-        Task {
-            do {
-                // Try to download via Supabase SDK for authenticated access
-                let pathComponents = url.pathComponents
-                if let filePathIndex = pathComponents.firstIndex(of: "body-scans"),
-                   filePathIndex + 1 < pathComponents.count {
-                    let filePath = pathComponents[(filePathIndex + 1)...].joined(separator: "/")
-                    
-                    let data = try await SupabaseManager.shared.client.storage
-                        .from("body-scans")
-                        .download(path: filePath)
-                    
-                    if let image = UIImage(data: data) {
-                        await MainActor.run {
-                            self.loadedImage = image
-                            self.isLoading = false
-                        }
-                        return
-                    }
-                }
-                
-                // Fallback to direct URL download
-                let (data, response) = try await URLSession.shared.data(from: url)
-                
-                if let httpResponse = response as? HTTPURLResponse,
-                   httpResponse.statusCode == 200,
-                   let image = UIImage(data: data) {
-                    await MainActor.run {
-                        self.loadedImage = image
-                        self.isLoading = false
-                    }
-                } else {
-                    await MainActor.run {
-                        self.isLoading = false
-                        self.loadFailed = true
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.isLoading = false
-                    self.loadFailed = true
-                }
-            }
+            imageLoader.load(from: spot.imageUrl)
         }
     }
 }

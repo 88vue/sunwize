@@ -318,13 +318,13 @@ CREATE TRIGGER on_profile_created
 -- Run this in Supabase Storage section or via SQL:
 -- 
 -- INSERT INTO storage.buckets (id, name, public)
--- VALUES ('body-scans', 'body-scans', false);
+-- VALUES ('body-spots', 'body-spots', false);
 --
 -- Create policy for storage bucket:
--- CREATE POLICY "Users can upload own body scan images"
+-- CREATE POLICY "Users can upload own body spot images"
 --     ON storage.objects FOR INSERT
---     WITH CHECK (bucket_id = 'body-scans' AND auth.uid()::text = (storage.foldername(name))[1]);
+--     WITH CHECK (bucket_id = 'body-spots' AND auth.uid()::text = (storage.foldername(name))[1]);
 --
--- CREATE POLICY "Users can view own body scan images"
+-- CREATE POLICY "Users can view own body spot images"
 --     ON storage.objects FOR SELECT
---     USING (bucket_id = 'body-scans' AND auth.uid()::text = (storage.foldername(name))[1]);
+--     USING (bucket_id = 'body-spots' AND auth.uid()::text = (storage.foldername(name))[1]);

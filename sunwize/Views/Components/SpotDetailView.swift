@@ -3,310 +3,357 @@ import SwiftUI
 struct SpotDetailView: View {
     let spot: BodySpot
     let onDelete: () -> Void
-    
-    @Environment(\.dismiss) var dismiss
+    let onClose: () -> Void
+
     @State private var showingShareSheet = false
     @State private var showingDeleteConfirmation = false
-    @State private var loadedImage: UIImage?
-    @State private var isLoadingImage = true
+    @StateObject private var imageLoader = ImageLoader()
 
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: 20) {
-                    // Image with share button
-                    ZStack(alignment: .topTrailing) {
-                        if let image = loadedImage {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 300)
-                                .clipped()
-                        } else if isLoadingImage {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 300)
-                                .overlay(
-                                    ProgressView()
-                                        .scaleEffect(1.5)
-                                        .tint(.orange)
-                                )
-                        } else {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 300)
-                                .overlay(
-                                    VStack(spacing: 12) {
-                                        Image(systemName: "photo")
-                                            .font(.system(size: 60))
-                                            .foregroundColor(.gray)
-                                        Text("Image not available")
-                                            .font(.body)
-                                            .foregroundColor(.secondary)
-                                    }
-                                )
-                        }
-                        
-                        // Share button overlay
-                        Button(action: { showingShareSheet = true }) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.title3)
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.black.opacity(0.5))
-                                .clipShape(Circle())
-                        }
-                        .padding()
+        // Full-screen overlay
+        ZStack {
+            // Transparent tap-to-dismiss layer
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture {
+                    onClose()
+                }
+
+            // White modal container
+            VStack(spacing: 0) {
+                // Image section with buttons
+                ZStack {
+                    // Image
+                    if let image = imageLoader.image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: Layout.modalWidth, height: Layout.modalImageHeight)
+                            .clipped()
+                    } else if imageLoader.isLoading {
+                        Rectangle()
+                            .fill(Color.slate200)
+                            .frame(width: Layout.modalWidth, height: Layout.modalImageHeight)
+                            .overlay(
+                                ProgressView()
+                                    .scaleEffect(1.5)
+                                    .tint(.orange)
+                            )
+                    } else {
+                        Rectangle()
+                            .fill(Color.slate200)
+                            .frame(width: Layout.modalWidth, height: Layout.modalImageHeight)
+                            .overlay(
+                                VStack(spacing: Spacing.md) {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 60))
+                                        .foregroundColor(.gray)
+                                    Text("Image not available")
+                                        .font(.body)
+                                        .foregroundColor(.secondary)
+                                }
+                            )
                     }
 
-                    // Date
-                    HStack {
-                        Image(systemName: "calendar")
-                            .foregroundColor(.orange)
-                        Text(spot.createdAt, format: .dateTime.month().day().year())
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
+                    // Close button (top-right)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            Spacer()
+                            Button(action: { onClose() }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.black.opacity(0.3))
+                                        .frame(width: 38, height: 38)
+
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                        }
+                        .padding(.top, 12)
+                        .padding(.trailing, 12)
                         Spacer()
                     }
-                    .padding(.horizontal)
+                    .frame(width: 334, height: 280)
 
-                    // ABCDE Assessment
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("ABCDE Assessment")
-                            .font(.headline)
+                    // Delete button (top-left)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            Button(action: { showingDeleteConfirmation = true }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.black.opacity(0.3))
+                                        .frame(width: 38, height: 38)
 
-                        AssessmentRow(
-                            title: "Asymmetry",
-                            value: spot.asymmetry ? "Yes" : "No",
-                            concerning: spot.asymmetry
-                        )
-
-                        AssessmentRow(
-                            title: "Border",
-                            value: spot.border.rawValue,
-                            concerning: spot.border == .irregular
-                        )
-
-                        AssessmentRow(
-                            title: "Color",
-                            value: spot.color.rawValue,
-                            concerning: spot.color == .varied
-                        )
-
-                        AssessmentRow(
-                            title: "Diameter",
-                            value: "\(Int(spot.diameter)) mm",
-                            concerning: spot.diameter > 6
-                        )
-
-                        AssessmentRow(
-                            title: "Evolution",
-                            value: spot.evolving.rawValue,
-                            concerning: spot.evolving == .grown
-                        )
-
-                        // Risk indicator
-                        let riskScore = calculateRiskScore()
-                        if riskScore > 2 {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(riskScore > 3 ? .red : .orange)
-
-                                Text(riskScore > 3 ?
-                                     "High-risk features detected. Consult a dermatologist." :
-                                     "Some concerning features. Monitor closely.")
-                                    .font(.caption)
-                                    .foregroundColor(riskScore > 3 ? .red : .orange)
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.white)
+                                }
                             }
-                            .padding()
-                            .background((riskScore > 3 ? Color.red : Color.orange).opacity(0.1))
-                            .cornerRadius(12)
+                            Spacer()
                         }
+                        .padding(.top, 12)
+                        .padding(.leading, 12)
+                        Spacer()
                     }
-                    .padding()
-                    .background(Color(.systemBackground))
-                    .cornerRadius(16)
-                    .padding(.horizontal)
+                    .frame(width: 334, height: 280)
 
-                    // Description
-                    if let description = spot.description, !description.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Description", systemImage: "text.alignleft")
-                                .font(.headline)
+                    // Share and Download buttons (bottom-left)
+                    VStack(spacing: 0) {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            // Share button
+                            Button(action: { showingShareSheet = true }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.9))
+                                        .frame(width: 34, height: 34)
+                                        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
 
-                            Text(description)
-                                .font(.body)
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(Color(hex: "0F172B") ?? .primary)
+                                }
+                            }
+
+                            // Download button
+                            Button(action: { saveImageToPhotos() }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.9))
+                                        .frame(width: 34, height: 34)
+                                        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+
+                                    Image(systemName: "arrow.down.to.line")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(Color(hex: "0F172B") ?? .primary)
+                                }
+                            }
+
+                            Spacer()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(16)
-                        .padding(.horizontal)
+                        .padding(.leading, 12)
+                        .padding(.bottom, 16)
                     }
-
-                    // Notes
-                    if let notes = spot.notes, !notes.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Notes", systemImage: "note.text")
-                                .font(.headline)
-
-                            Text(notes)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(16)
-                        .padding(.horizontal)
-                    }
-
-                    // Actions
-                    HStack(spacing: 16) {
-                        Button(action: { showingShareSheet = true }) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .cornerRadius(12)
-                        }
-
-                        Button(action: { showingDeleteConfirmation = true }) {
-                            Label("Delete", systemImage: "trash")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.red)
-                                .cornerRadius(12)
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.bottom)
+                    .frame(width: 334, height: 280)
                 }
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Spot Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
+                .frame(width: 334, height: 280)
+
+                // Content section (scrollable)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Header with date and evolution badge
+                        HStack(alignment: .top, spacing: 0) {
+                            // Left side: Spot Analysis and date
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Spot Analysis")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundColor(Color(hex: "0F172B") ?? .primary)
+                                    .tracking(-0.44)
+
+                                HStack(spacing: 6) {
+                                    Image(systemName: "calendar")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(Color(hex: "62748E") ?? .secondary)
+
+                                    Text("Logged on \(formattedDate)")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(Color(hex: "62748E") ?? .secondary)
+                                        .tracking(-0.31)
+                                }
+                            }
+
+                            Spacer()
+
+                            // Right side: Evolution badge
+                            VStack(spacing: 2) {
+                                Text("EVOLUTION")
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundColor(Color(hex: "E17100") ?? .orange)
+                                    .tracking(0.62)
+
+                                Text(evolutionStatus)
+                                    .font(.system(size: 16))
+                                    .foregroundColor(Color(hex: "7B3306") ?? .brown)
+                                    .tracking(-0.31)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color(hex: "FFFBEB") ?? Color.yellow.opacity(0.1)) // amber-50
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(Color(hex: "FEF3C6") ?? Color.yellow.opacity(0.2), lineWidth: 1)
+                            )
+                            .cornerRadius(14)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 20)
+
+                        // ABCDE Assessment section
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("ABCDE ASSESSMENT")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(Color(hex: "90A1B9") ?? .secondary)
+                                .tracking(0.6)
+                                .padding(.horizontal, 20)
+
+                            VStack(spacing: 10) {
+                                AssessmentRowNew(
+                                    title: "Asymmetry",
+                                    value: spot.asymmetry ? "Yes" : "No",
+                                    riskColor: getRiskColor(for: "asymmetry")
+                                )
+
+                                AssessmentRowNew(
+                                    title: "Border",
+                                    value: spot.border.rawValue,
+                                    riskColor: getRiskColor(for: "border")
+                                )
+
+                                AssessmentRowNew(
+                                    title: "Color",
+                                    value: spot.color.rawValue,
+                                    riskColor: getRiskColor(for: "color")
+                                )
+
+                                AssessmentRowNew(
+                                    title: "Diameter",
+                                    value: "\(Int(spot.diameter))mm",
+                                    riskColor: getRiskColor(for: "diameter")
+                                )
+                            }
+                            .padding(.horizontal, 20)
+                        }
+
+                        // Notes section
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("NOTES")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(Color(hex: "90A1B9") ?? .secondary)
+                                .tracking(0.6)
+
+                            Text(notesText)
+                                .font(.system(size: 15, weight: .regular))
+                                .italic()
+                                .foregroundColor(Color(hex: "45556C") ?? .secondary)
+                                .lineSpacing(11)
+                                .tracking(-0.31)
+                                .padding(13)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(hex: "F8FAFC") ?? Color.gray.opacity(0.1)) // slate-50
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .stroke(Color(hex: "F1F5F9") ?? Color.gray.opacity(0.2), lineWidth: 1)
+                                )
+                                .cornerRadius(14)
+                        }
+                        .padding(.horizontal, 20)
                     }
                 }
+                .frame(maxHeight: 440)
             }
+            .frame(width: 334, height: 720)
+            .background(Color.white)
+            .cornerRadius(24)
+            .shadow(color: Color.black.opacity(0.25), radius: 25, x: 0, y: 25)
         }
         .sheet(isPresented: $showingShareSheet) {
-            ShareSheet(items: [generateShareText()])
+            if let image = imageLoader.image {
+                ShareSheet(items: [image])
+            } else {
+                ShareSheet(items: [])
+            }
         }
         .alert("Delete Spot", isPresented: $showingDeleteConfirmation) {
             Button("Delete", role: .destructive) {
                 onDelete()
-                dismiss()
+                onClose()
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to delete this spot? This action cannot be undone.")
         }
         .onAppear {
-            loadImage()
-        }
-    }
-    
-    private func loadImage() {
-        guard let url = URL(string: spot.imageUrl) else {
-            isLoadingImage = false
-            return
-        }
-        
-        Task {
-            do {
-                // Try to download via Supabase SDK for authenticated access
-                let pathComponents = url.pathComponents
-                if let filePathIndex = pathComponents.firstIndex(of: "body-scans"),
-                   filePathIndex + 1 < pathComponents.count {
-                    let filePath = pathComponents[(filePathIndex + 1)...].joined(separator: "/")
-                    
-                    let data = try await SupabaseManager.shared.client.storage
-                        .from("body-scans")
-                        .download(path: filePath)
-                    
-                    if let image = UIImage(data: data) {
-                        await MainActor.run {
-                            self.loadedImage = image
-                            self.isLoadingImage = false
-                        }
-                        return
-                    }
-                }
-                
-                await MainActor.run {
-                    self.isLoadingImage = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.isLoadingImage = false
-                }
-            }
+            imageLoader.load(from: spot.imageUrl)
         }
     }
 
-    private func calculateRiskScore() -> Int {
-        var score = 0
-        if spot.asymmetry { score += 1 }
-        if spot.border == .irregular { score += 1 }
-        if spot.color == .varied { score += 1 }
-        if spot.diameter > 6 { score += 1 }
-        if spot.evolving == .grown { score += 1 }
-        return score
+    // MARK: - Computed Properties
+
+    private var formattedDate: String {
+        return DateFormatters.formatMonthDay(spot.createdAt)
     }
 
-    private func generateShareText() -> String {
-        """
-        Body Spot Assessment
-        Date: \(spot.createdAt.formatted())
-        Location: \(spot.bodyPart)
+    private var evolutionStatus: String {
+        switch spot.evolving {
+        case .unchanged:
+            return "No"
+        case .growing:
+            return "Yes"
+        case .changing:
+            return "Yes"
+        }
+    }
 
-        ABCDE Assessment:
-        - Asymmetry: \(spot.asymmetry ? "Yes" : "No")
-        - Border: \(spot.border.rawValue)
-        - Color: \(spot.color.rawValue)
-        - Diameter: \(Int(spot.diameter)) mm
-        - Evolution: \(spot.evolving.rawValue)
+    private var notesText: String {
+        if let notes = spot.notes, !notes.isEmpty {
+            return "\"\(notes)\""
+        } else {
+            return "No notes"
+        }
+    }
 
-        \(spot.description ?? "")
+    // MARK: - Helper Functions
 
-        Tracked with Sunwize App
-        """
+    private func getRiskColor(for indicator: String) -> Color {
+        // TODO: Implement proper risk assessment logic based on ABCDE criteria
+        return Color.success
+    }
+
+    private func saveImageToPhotos() {
+        guard let image = imageLoader.image else { return }
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
     }
 }
 
-struct AssessmentRow: View {
+// MARK: - Assessment Row Component
+struct AssessmentRowNew: View {
     let title: String
     let value: String
-    let concerning: Bool
+    let riskColor: Color
 
     var body: some View {
         HStack {
-            Text(title)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            // Left side: colored dot + title
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(riskColor)
+                    .frame(width: 8, height: 8)
+
+                Text(title)
+                    .font(.system(size: 16))
+                    .foregroundColor(Color(hex: "45556C") ?? .secondary)
+                    .tracking(-0.31)
+            }
 
             Spacer()
 
+            // Right side: value
             Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(concerning ? .orange : .primary)
-
-            if concerning {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-            }
+                .font(.system(size: 16))
+                .foregroundColor(Color(hex: "0F172B") ?? .primary)
+                .tracking(-0.31)
         }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 13)
+        .background(Color(hex: "F8FAFC") ?? Color.gray.opacity(0.1)) // slate-50
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(hex: "F1F5F9") ?? Color.gray.opacity(0.2), lineWidth: 1)
+        )
+        .cornerRadius(14)
     }
 }
 
@@ -320,3 +367,4 @@ struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+

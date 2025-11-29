@@ -317,7 +317,6 @@ class AuthenticationService: NSObject, ObservableObject {
 
 // MARK: - Sign in with Apple Button
 struct SignInWithAppleButton: View {
-    @Environment(\.colorScheme) var colorScheme
     @StateObject private var authService = AuthenticationService.shared
 
     var body: some View {
@@ -329,9 +328,7 @@ struct SignInWithAppleButton: View {
                 authService.handleSignInWithApple(result: result)
             }
         )
-        .signInWithAppleButtonStyle(
-            colorScheme == .dark ? .white : .black
-        )
+        .signInWithAppleButtonStyle(.black)
         .frame(height: 50)
     }
 }

@@ -50,7 +50,7 @@ struct WelcomeView: View {
 
                 FeatureRow(
                     icon: "camera.fill",
-                    title: "Body Scans",
+                    title: "Body Spots",
                     description: "Track skin changes over time"
                 )
 

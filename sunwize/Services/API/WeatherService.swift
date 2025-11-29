@@ -45,27 +45,54 @@ class WeatherService {
 
     func getUVForecast(latitude: Double, longitude: Double) async throws -> [UVForecastData] {
         let cacheKey = "uvforecast_\(latitude)_\(longitude)"
-        
+
         // Check cache (thread-safe read)
         let cachedValue: (data: Any, timestamp: Date)? = cacheQueue.sync {
             return cache[cacheKey]
         }
-        
+
         if let cached = cachedValue,
            Date().timeIntervalSince(cached.timestamp) < cacheDuration,
            let forecast = cached.data as? [UVForecastData] {
             return forecast
         }
-        
+
         // Fetch from CurrentUVIndex.com API
         let forecast = try await fetchUVForecastFromAPI(latitude: latitude, longitude: longitude)
-        
+
         // Update cache (thread-safe write)
         cacheQueue.async(flags: .barrier) { [weak self] in
             self?.cache[cacheKey] = (data: forecast, timestamp: Date())
         }
-        
+
         return forecast
+    }
+
+    /// Fetches both current UV index and forecast in a single API call
+    /// Returns (currentUV, forecast) - more efficient than calling both separately
+    func getUVDataWithForecast(latitude: Double, longitude: Double) async throws -> (currentUV: Double, forecast: [UVForecastData]) {
+        let cacheKey = "uvdata_combined_\(latitude)_\(longitude)"
+
+        // Check cache (thread-safe read)
+        let cachedValue: (data: Any, timestamp: Date)? = cacheQueue.sync {
+            return cache[cacheKey]
+        }
+
+        if let cached = cachedValue,
+           Date().timeIntervalSince(cached.timestamp) < cacheDuration,
+           let combinedData = cached.data as? (currentUV: Double, forecast: [UVForecastData]) {
+            return combinedData
+        }
+
+        // Fetch from CurrentUVIndex.com API (single call returns both)
+        let result = try await fetchUVDataCombinedFromAPI(latitude: latitude, longitude: longitude)
+
+        // Update cache (thread-safe write)
+        cacheQueue.async(flags: .barrier) { [weak self] in
+            self?.cache[cacheKey] = (data: result, timestamp: Date())
+        }
+
+        return result
     }
 
     // MARK: - Sun Times API
@@ -282,6 +309,83 @@ extension WeatherService {
             guard let date = formatter.date(from: item.date) else { return nil }
             return UVForecastData(time: date, uvIndex: item.uvi)
         }
+    }
+
+    /// Combined fetch that returns both current UV and forecast from single API call
+    private func fetchUVDataCombinedFromAPI(latitude: Double, longitude: Double) async throws -> (currentUV: Double, forecast: [UVForecastData]) {
+        let urlString = "\(AppConfig.currentUVIndexBaseURL)/uvi?latitude=\(latitude)&longitude=\(longitude)"
+        guard let url = URL(string: urlString) else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+
+        // Parse CurrentUVIndex.com response
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // Extract current UV from "now" field
+        var currentUV: Double = 0.0
+        if let now = json?["now"] as? [String: Any],
+           let uvi = now["uvi"] as? Double {
+            currentUV = uvi
+        }
+
+        // Build forecast array (history + now + forecast)
+        var combined: [(date: String, uvi: Double)] = []
+
+        // Add history if available
+        if let history = json?["history"] as? [[String: Any]] {
+            for item in history {
+                if let time = item["time"] as? String ?? item["date"] as? String,
+                   let uvi = item["uvi"] as? Double {
+                    combined.append((date: time, uvi: uvi))
+                }
+            }
+        }
+
+        // Add current value
+        if let now = json?["now"] as? [String: Any],
+           let time = now["time"] as? String ?? now["date"] as? String,
+           let uvi = now["uvi"] as? Double {
+            combined.append((date: time, uvi: uvi))
+        }
+
+        // Add forecast
+        if let forecast = json?["forecast"] as? [[String: Any]] {
+            for item in forecast {
+                if let time = item["time"] as? String ?? item["date"] as? String,
+                   let uvi = item["uvi"] as? Double {
+                    combined.append((date: time, uvi: uvi))
+                }
+            }
+        }
+
+        // Sort by time
+        combined.sort { first, second in
+            let formatter = ISO8601DateFormatter()
+            guard let date1 = formatter.date(from: first.date),
+                  let date2 = formatter.date(from: second.date) else {
+                return false
+            }
+            return date1 < date2
+        }
+
+        // Convert to UVForecastData
+        let formatter = ISO8601DateFormatter()
+        let forecastData = combined.compactMap { item -> UVForecastData? in
+            guard let date = formatter.date(from: item.date) else { return nil }
+            return UVForecastData(time: date, uvIndex: item.uvi)
+        }
+
+        return (currentUV: currentUV, forecast: forecastData)
     }
 
     // SunriseSunset.io API

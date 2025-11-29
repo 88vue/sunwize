@@ -8,75 +8,155 @@ import UIKit
 // MARK: - Location Manager
 /// Advanced location manager with Apple Native Signals + OpenStreetMap validation
 ///
-/// ARCHITECTURE (Nov 2025 - PHASE 1, 2, & CRITICAL FIXES):
-/// - iOS Native Background Updates: Uses didUpdateLocations (reliable, battery-efficient)
-/// - NO custom background timers (redundant, unreliable, battery-draining)
-/// - Geofencing: 18 nearest buildings for instant transitions (improved from 15 for dense urban coverage)
-/// - Visit Monitoring: Stationary location hints (>3 min stays)
-/// - CoreMotion: Enhanced vehicle detection with immediate response
-/// - Smart Caching: 3-decimal precision (~111m cells) reduces API calls by 80%
-/// - API Fallback: GPS + motion heuristics when Overpass API unavailable
-/// - **NEW: GPS Drift Detection** (Critical Fix #1) - Prevents false mode changes from GPS oscillation
-/// - **NEW: Mode Lock** (Critical Fix #3) - Locks stable states to prevent drift-induced transitions
-/// - **NEW: Intermediate Accuracy Patterns** (Important Enhancement #4) - Handles blind spots in 15-35m range
-///
-/// NEW SIGNAL HIERARCHY (Phase 1, 2, & Critical Fixes):
-/// TIER 1 (Definitive): CLFloor detection (95%+ accuracy, instant, no API)
-/// TIER 2 (Strong): **GPS accuracy patterns** (85% accuracy, fast, no API) - NOW WITH INTERMEDIATE PATTERNS
-///   - Definitive indoor: >35m avg + >15m stdDev
-///   - Definitive outdoor: <12m avg + <4m stdDev
-///   - Near-window indoor: 15-28m avg + 6-15m stdDev + stationary
-///   - Dense urban outdoor: 20-40m avg + 10-25m stdDev + walking
-///   - Moderate outdoor: 12-20m avg + 4-10m stdDev
-/// TIER 3 (System): Geofence entry/exit events (90% accuracy, instant, iOS native)
-/// TIER 4 (Validation): **Barometric pressure** (VALIDATION ONLY - Critical Fix #2, no solo decisions)
-/// TIER 5 (Validation): OpenStreetMap polygons (85% accuracy, API-dependent - now validation role)
-/// TIER 6 (Fallback): Distance + motion heuristics (70% accuracy, no API)
-///
-/// DETECTION PHILOSOPHY:
-/// - Asymmetric thresholds: Vehicle (0.85, 1 sample) vs Outdoor Walking (0.55-0.60, sustained) vs Indoor (0.60)
-/// - Conservative outdoor detection: Prioritizes avoiding false positives over missing outdoor time
-/// - Floor detection override: Inside building = 0.98 confidence (definitive signal)
-/// - **NEW: Accuracy pattern blind spots fixed** (Enhancement #4) - Cross-references motion for 15-35m range
-/// - Adaptive history window: 60s stationary, 120s moving (faster indoor detection)
-/// - Time-decay weighting: Recent samples weighted higher (reduces GPS drift persistence)
-/// - Geofence boost: Recent building exit (<60s) gives high confidence outdoor (0.85-0.90)
-/// - GPS timeout: No valid GPS for >5min → UNKNOWN mode (subway/tunnel handling)
-/// - Adaptive sampling: 10m filter when moving/uncertain, 15m when stationary
-/// - Sustained walking bonus: +0.15 confidence over 2min (sidewalk detection)
-/// - **NEW: Drift detection** (Critical Fix #1) - Locks mode when GPS oscillates while stationary
-/// - **NEW: Mode lock** (Critical Fix #3) - After 5min stable, requires 0.85 confidence to unlock
-/// - **NEW: Barometer validation** (Critical Fix #2) - Boosts confidence only, prevents elevator false positives
-///
-/// PERFORMANCE TARGETS (Nov 2025 - Phase 1, 2, & Critical Fixes):
-/// - Indoor detection: 5-10s (IMPROVED from 15-30s via CLFloor + accuracy patterns)
-/// - Outdoor detection: 15-20s (IMPROVED from 30-45s via accuracy patterns + sustained walking)
-/// - Sidewalk detection: 15-20s (IMPROVED from 60-90s via lower threshold + walking bonuses)
-/// - Geofence exit: INSTANT (iOS system-level with 60s boost window)
-/// - Vehicle detection: 5-15s (immediate on automotive + speed match)
-/// - False positive rate: <1% (IMPROVED from <2% via drift detection + mode lock)
-/// - API calls: ~10/day per user (REDUCED from ~100/day - 90% reduction via Apple native signals)
-/// - Battery impact: VERY LOW (Apple native sensors only, minimal API calls)
-/// - API outage resilience: 95%+ detection preserved (Apple signals work offline)
-/// - Accuracy: 97%+ (IMPROVED from ~95% via drift detection eliminating GPS bounce)
-/// - Long-duration stability: >99% (NEW - mode lock prevents multi-hour drift accumulation)
-///
-/// REAL-WORLD VALIDATION (Expected Phase 1, 2, & Critical Fixes + Enhancement #4):
-/// - Office worker near window: <1% false positives (CLFloor + mode lock + near-window pattern) ✓
-/// - Walking to park (2km): Outdoor detection in 15-20s ✓
-/// - Sidewalk walking: Outdoor detection in 15-20s (was 60-90s) ✓
-/// - Geofence building exit: Instant outdoor confirmation ✓
-/// - Driving: Vehicle detection in 5-15s ✓
-/// - Subway/tunnel: Switches to UNKNOWN after 5min ✓
-/// - **NEW: Dense urban (NYC/SF)**: Outdoor detected (dense urban pattern) ✓
-/// - API outages: Full offline capability with Apple native signals ✓
-/// - Indoor gym/movement: <1% false positives (CLFloor + mode lock) ✓
-/// - Building entry/exit: 5-10s transitions (pressure validation) ✓
-/// - **NEW: Stationary GPS drift**: Detected and locked within 3min ✓
-/// - **NEW: Elevator rides**: No false outdoor (barometer validation-only) ✓
-/// - **NEW: Long desk sessions**: Stable for hours (mode lock) ✓
-/// - **NEW: Bus stop waiting**: Outdoor detected (stationary outdoor pattern) ✓
-/// - **NEW: Café near window**: Indoor detected (near-window pattern + stationary) ✓
+//   📊 Three-Tier State Machine with Movement-Validated Polygon Exits
+
+//   TIER 1: Starting UV Tracking (Lines 464-515)
+
+//   Very conservative to prevent false positives:
+
+//   Requirements to START:
+//   ├─ Confidence: 0.90 (0.92 during startup)
+//   ├─ NOT inside any building polygon (absolute veto - prevents "clearly inside" false positives)
+//   ├─ Distance >40m from buildings
+//   │  └─ OR: Recent polygon exit (<90s) with ≥10m movement as override
+//   │     ⚠️  Polygon exits require movement validation to prevent GPS drift false exits
+//   │     ⚠️  If GPS drifts outside polygon but position hasn't moved ≥10m, exit is rejected
+//   │  └─ OR: Clear outdoor evidence (walking + excellent GPS <25m + confidence ≥0.92)
+//   │     ✓  Enables urban sidewalk tracking while preventing GPS drift false positives
+//   └─ Daytime only
+
+//   On success:
+//   ├─ Start UV tracking timer
+//   ├─ Activate outdoor tracking lock 🔒
+//   └─ Log: "OUTDOOR LOCK ACTIVATED"
+
+//   Example log output:
+//   🎯 Evaluating outdoor start conditions (lock not active)
+//   ✅ POLYGON EXIT VALIDATED: movement 35m confirms actual exit
+//   ✅ Distance safety check passed: 52m from nearest building
+//   ☀️ [UVTRCK] START outdoor detection confirmed
+//   🔒 OUTDOOR LOCK ACTIVATED - will maintain outdoor state until strong indoor signal
+
+//   TIER 2: Maintaining UV Tracking (Lines 450-462)
+
+//   Stable & sticky during active tracking:
+
+//   When outdoor lock is active:
+//   ├─ IGNORE distance oscillations (8m → 30m → 12m...)
+//   ├─ IGNORE confidence variations (0.88 → 0.73 → 0.85...)
+//   ├─ IGNORE weak indoor signals
+//   ├─ MAINTAIN outdoor state
+//   └─ Continue accumulating UV exposure
+
+//   Only exits on strong signals (TIER 3)
+
+//   Example log output:
+//   🔒 Outdoor lock active (142s) - maintaining UV tracking
+//   🔒 Outdoor lock active (156s) - ignoring weak indoor signal (confidence: 0.68)
+
+//   TIER 3: Stopping UV Tracking (Lines 602-649)
+
+//   Responsive to strong signals only:
+
+//   When outdoor lock is active:
+//   ├─ Requires STRONG indoor signal:
+//   │  ├─ Sustained polygon occupancy (>30s inside)
+//   │  ├─ Floor detection (multi-story building)
+//   │  ├─ Vehicle detection (0.85+ confidence)
+//   │  └─ Stationary near building (>3 min)
+//   └─ On weak signal: Stay locked, continue tracking
+
+//   When lock not active:
+//   └─ Requires 0.70 confidence (normal indoor)
+
+//   On stop:
+//   ├─ Stop UV tracking timer
+//   ├─ End current UV session
+//   ├─ Release outdoor lock 🔓
+//   └─ Log: "Strong indoor signal detected"
+
+//   Example log output:
+//   ✅ Strong indoor signal: Inside polygon for 35s
+//   🔓 Strong indoor signal detected - RELEASING outdoor lock and stopping UV tracking
+//   ☀️ [UVTRCK] STOP - Strong indoor signal detected
+//
+//   🏢 POLYGON-BASED GEOFENCING: Exact Building Boundaries (Lines 710-793)
+//
+//   Core concept: Use exact OSM building polygons instead of circular geofences
+//
+//   Why this matters:
+//   ├─ Circular geofences (30m radius) are imprecise in urban areas
+//   ├─ Sidewalk 12m from building = inside circular geofence = false entry
+//   ├─ Building polygons = exact footprint from OpenStreetMap
+//   └─ Result: Dramatically more accurate indoor/outdoor detection
+//
+//   Entry Detection:
+//   ├─ GPS crosses polygon boundary inward
+//   ├─ Records: Entry timestamp + entry position
+//   └─ Purpose: Position stored for exit validation
+//
+//   Exit Detection with Movement Validation (CRITICAL):
+//   ├─ GPS crosses polygon boundary outward
+//   ├─ Calculates: Distance moved since entry
+//   ├─ Validates: Movement ≥10m required
+//   │  └─ If <10m: REJECT exit (GPS drift, not real movement)
+//   │  └─ If ≥10m: ACCEPT exit (actual user movement)
+//   └─ Purpose: Prevents GPS drift from creating false exit events
+//
+//   Why movement validation is critical:
+//   • Without validation: User sits indoors, GPS drifts 10m outside polygon boundary,
+//     system records "exit", user walks to printer indoors, system thinks they exited
+//     building and starts UV tracking indoors → FALSE POSITIVE ❌
+//   • With validation: GPS drift rejected (<10m movement), only real exits with
+//     actual user movement are recorded → No false positives ✓
+//
+//   Example log output (rejected drift):
+//   ⚠️ POLYGON EXIT REJECTED: building123 - movement only 8m, likely GPS drift
+//
+//   Example log output (validated exit):
+//   ✅ POLYGON EXIT VALIDATED: building123 - movement 35m confirms actual exit
+//   🚪 POLYGON EXIT: building123 - was inside for 180s
+//
+//   🪟 NEAR WINDOW DETECTION: Preventing Urban False Positives (Lines 1557-1567, 2574-2579)
+//
+//   Problem: User at desk near window gets excellent GPS (5-15m accuracy)
+//   Result: System thinks "excellent GPS = outdoor" and starts UV tracking indoors
+//
+//   Solution: Multi-factor "near window" detection:
+//   ├─ Stationary for >2 minutes (not walking/moving)
+//   ├─ Excellent GPS accuracy (<15m)
+//   ├─ Near or inside building (<5m distance OR inside polygon)
+//   └─ Result: Classify as UNKNOWN (prevents UV tracking)
+//
+//   Where it triggers:
+//   1. TIER 2 (Accuracy Pattern): If "definitive outdoor" pattern detected but stationary >2min
+//   2. TIER 5 (Building Distance): If stationary with good GPS near building
+//
+//   Example log output:
+//   🪟 NEAR WINDOW detected: Stationary >2min + excellent GPS (6.1m) + near building (0m)
+//   📊 Accuracy pattern: EXCELLENT GPS but stationary >2min - rejecting outdoor (likely near window)
+//
+//   📱 CIRCULAR GEOFENCES: Background Wake-Up Only (Lines 695-3130)
+//
+//   Purpose: iOS native geofences can wake app when suspended in background
+//
+//   What they do:
+//   ├─ Setup: 30m radius circles around nearest 20 buildings
+//   ├─ Callback: didEnterRegion / didExitRegion wake app
+//   ├─ Action: Trigger performLocationCheck() to run polygon-based classification
+//   └─ NOT USED: For classification decisions (polygon-based is more accurate)
+//
+//   Why keep them:
+//   ├─ Polygon checks only work when app is actively processing location updates
+//   ├─ Circular geofences can wake app from suspended state
+//   └─ Result: Background transitions trigger accurate polygon-based classification
+//
+//   Why not use for classification:
+//   ├─ 30m radius too imprecise (sidewalk triggers entry)
+//   ├─ No movement validation (GPS drift creates false exits)
+//   └─ Polygon-based system is superior in every way for actual classification
+
+
 @MainActor
 class LocationManager: NSObject, ObservableObject {
     static let shared = LocationManager()
@@ -107,6 +187,8 @@ class LocationManager: NSObject, ObservableObject {
     private var motionHistory: [MotionSample] = []
     private var lastCheckTimestamp = Date.distantPast
     private var pendingCheck: Task<LocationState, Error>?
+    private var lastDetectionLogTime: Date = .distantPast  // Debounce detection logs
+    private var lastGeofenceSetupHash: Int = 0  // Skip redundant geofence setup
 
     // MARK: - Cache Management
     private var lastCachedLocation: CLLocationCoordinate2D?
@@ -132,6 +214,12 @@ class LocationManager: NSObject, ObservableObject {
     private var geofenceEntryTimestamps: [String: Date] = [:] // PRIORITY 4 FIX: Track entry time per building for time-in-geofence analysis
     private var lastValidGPSTimestamp = Date() // Track GPS availability for timeout detection
     private var lastHighConfidenceInsideTimestamp: Date? // Track polygon detection to prevent immediate flip-flopping
+
+    // MARK: - Polygon-Based Geofencing (Exact Building Boundaries)
+    private var currentPolygons: Set<String> = []  // Building IDs currently inside (exact boundary tracking)
+    private var polygonEntryTimestamps: [String: Date] = [:]  // Track entry time for sustained occupancy detection
+    private var polygonExitTimestamps: [String: Date] = [:]  // Track exit time for recent exit detection
+    private var polygonEntryPositions: [String: CLLocationCoordinate2D] = [:]  // Track entry position to validate actual movement at exit
     
     // MARK: - Apple Native Signal Tracking (Phase 1 & 2 Enhancement)
     private var lastFloorDetectionTime: Date?
@@ -146,6 +234,11 @@ class LocationManager: NSObject, ObservableObject {
     // MARK: - Critical Fix 3: Mode Lock for Stable States (Nov 2025)
     private var modeLock: ModeLock?
 
+    // MARK: - Critical Fix 4: Underground Baseline Reset (Nov 2025)
+    private var lastBaselineResetLocation: CLLocationCoordinate2D?
+    private let baselineResetThreshold: Double = 1000.0  // 1km threshold for baseline reset
+
+
     // MARK: - Priority 7: Initial Startup Tracking (Conservative First Classification)
     private var trackingStartTime: Date?
 
@@ -153,6 +246,21 @@ class LocationManager: NSObject, ObservableObject {
     private var inTunnelMode: Bool = false
     private var tunnelStartTime: Date?
     private var preTunnelMode: LocationMode?
+
+    // MARK: - Vehicle Mode Persistence (Stop-and-Go Driving Support)
+    private var lastVehicleDetectionTime: Date?
+    private var vehicleModeConfirmedTime: Date?
+    private var lastStrongVehicleConfidence: Double = 0.0
+    private var consecutiveStops: Int = 0
+    private var lastSignificantSpeed: Double = 0.0  // Last speed >2 m/s
+    private var isInVehicleMode: Bool = false  // Sticky vehicle state
+
+    // MARK: - Manual Indoor Override (Phase 1 & 2)
+    private var manualIndoorOverride: Bool = false
+    private var manualOverrideStartTime: Date?
+    private var manualOverrideDuration: TimeInterval = 900 // 15 minutes default
+    private let manualOverrideKey = "manualIndoorOverrideState"
+    var manualOverrideEnabled: Bool = true // Can be toggled in settings
 
     // MARK: - State Persistence
     private let userDefaults = UserDefaults.standard
@@ -184,6 +292,23 @@ class LocationManager: NSObject, ObservableObject {
         let longitude: Double
         let accuracy: Double?
         let uncertaintyReason: LocationUncertaintyReason?
+        let signalSource: String?  // Added Nov 2025: Track which signal produced this classification
+
+        /// Signal source quality weight for time decay calculation
+        /// Definitive signals (floor, polygon) decay slower than probabilistic signals
+        var signalQualityWeight: Double {
+            guard let source = signalSource else { return 1.0 }
+            switch source {
+            case "floor":           return 2.0   // Floor detection is definitive - decay 2x slower
+            case "polygon":         return 1.5   // Polygon occupancy is strong - decay 1.5x slower
+            case "accuracyPattern": return 1.0   // Standard decay
+            case "geofence":        return 1.0   // Standard decay
+            case "pressureChange":  return 0.8   // Pressure is validation only - decay faster
+            case "distanceMotion":  return 1.0   // Standard decay
+            case "fallback":        return 0.7   // Fallback heuristics - decay faster
+            default:                return 1.0
+            }
+        }
     }
 
     struct MotionSample: Codable {
@@ -253,13 +378,18 @@ class LocationManager: NSObject, ObservableObject {
         let lockedMode: LocationMode
         let lockStartTime: Date
         let lockConfidence: Double
-        
+
         /// Required confidence to break the lock (higher than normal threshold)
         static let unlockConfidenceRequirement: Double = 0.85
-        
+
         /// Minimum duration before mode can be locked (5 minutes)
         static let minLockDuration: TimeInterval = 300
-        
+
+        /// Maximum lock duration before auto-expiry (REDUCED from 30 to 10 minutes - Nov 2025)
+        /// Rationale: 30 minutes was too long - wrong classification could trap user for half hour
+        /// 10 minutes balances stability (prevents flip-flopping) with responsiveness (recovers from errors)
+        static let maxLockDuration: TimeInterval = 600
+
         func shouldUnlock(newMode: LocationMode, newConfidence: Double, timestamp: Date) -> Bool {
             // Different mode with high confidence can break lock
             if newMode != lockedMode && newConfidence >= Self.unlockConfidenceRequirement {
@@ -268,10 +398,10 @@ class LocationManager: NSObject, ObservableObject {
             }
             return false
         }
-        
+
         func isExpired(timestamp: Date) -> Bool {
-            // Locks expire after 30 minutes to prevent getting stuck
-            return timestamp.timeIntervalSince(lockStartTime) > 1800
+            // Locks expire after maxLockDuration to prevent getting stuck
+            return timestamp.timeIntervalSince(lockStartTime) > Self.maxLockDuration
         }
     }
 
@@ -416,19 +546,119 @@ class LocationManager: NSObject, ObservableObject {
 
     func stopLocationUpdates() {
         isTracking = false
-        
+
         // Stop motion monitoring
         stopMotionManager()
-        
+
         // PHASE 2: Stop pressure monitoring
         stopPressureMonitoring()
-        
+
         // Stop location services
         locationManager.stopUpdatingLocation()
         locationManager.stopMonitoringSignificantLocationChanges()
         locationManager.stopMonitoringVisits()
-        
+
         print("🛑 [LocationManager] Background location tracking STOPPED")
+    }
+
+    // MARK: - Manual Override API
+
+    /// Activates manual indoor override, forcing indoor classification for specified duration
+    /// - Parameter duration: Duration in seconds (default: 900 = 15 minutes)
+    func setManualIndoorOverride(duration: TimeInterval = 900) {
+        guard manualOverrideEnabled else {
+            print("⚠️ [LocationManager] Manual override is disabled in settings")
+            return
+        }
+
+        manualIndoorOverride = true
+        manualOverrideStartTime = Date()
+        manualOverrideDuration = duration
+
+        // Persist to UserDefaults
+        let overrideDict: [String: Any] = [
+            "isActive": true,
+            "startTime": manualOverrideStartTime!.timeIntervalSince1970,
+            "duration": duration
+        ]
+        userDefaults.set(overrideDict, forKey: manualOverrideKey)
+
+        // Force immediate re-evaluation
+        Task {
+            _ = try? await getCurrentState(forceRefresh: true)
+        }
+
+        DetectionLogger.logState(
+            event: "manual_override_activated",
+            mode: .inside,
+            details: ["duration_seconds": Int(duration)]
+        )
+
+        print("🏠 [LocationManager] Manual indoor override activated for \(Int(duration/60)) minutes")
+    }
+
+    /// Clears manual indoor override, resuming automatic detection
+    func clearManualOverride() {
+        manualIndoorOverride = false
+        manualOverrideStartTime = nil
+
+        // Clear from UserDefaults
+        userDefaults.removeObject(forKey: manualOverrideKey)
+
+        // Force immediate re-evaluation
+        Task {
+            _ = try? await getCurrentState(forceRefresh: true)
+        }
+
+        print("🔓 [LocationManager] Manual override cleared - resuming automatic detection")
+    }
+
+    /// Extends the current manual override by additional time
+    /// - Parameter additionalSeconds: Additional duration in seconds (default: 900 = 15 minutes)
+    func extendManualOverride(additionalSeconds: TimeInterval = 900) {
+        guard manualIndoorOverride, let startTime = manualOverrideStartTime else {
+            print("⚠️ [LocationManager] No active override to extend")
+            return
+        }
+
+        // Extend duration from current time
+        let elapsed = Date().timeIntervalSince(startTime)
+        manualOverrideDuration = elapsed + additionalSeconds
+
+        // Update persistence
+        let overrideDict: [String: Any] = [
+            "isActive": true,
+            "startTime": startTime.timeIntervalSince1970,
+            "duration": manualOverrideDuration
+        ]
+        userDefaults.set(overrideDict, forKey: manualOverrideKey)
+
+        print("⏰ [LocationManager] Manual override extended by \(Int(additionalSeconds/60)) minutes")
+    }
+
+    /// Computed property indicating if manual override is currently active
+    var isManualOverrideActive: Bool {
+        guard manualIndoorOverride, let overrideTime = manualOverrideStartTime else {
+            return false
+        }
+        let elapsed = Date().timeIntervalSince(overrideTime)
+        if elapsed >= manualOverrideDuration {
+            // Auto-expire if duration exceeded
+            Task { @MainActor in
+                clearManualOverride()
+            }
+            return false
+        }
+        return true
+    }
+
+    /// Returns remaining time in seconds for active manual override
+    var manualOverrideRemainingTime: TimeInterval? {
+        guard isManualOverrideActive, let startTime = manualOverrideStartTime else {
+            return nil
+        }
+        let elapsed = Date().timeIntervalSince(startTime)
+        return max(0, manualOverrideDuration - elapsed)
     }
 
     func getCurrentState(forceRefresh: Bool = false) async throws -> LocationState {
@@ -640,12 +870,48 @@ class LocationManager: NSObject, ObservableObject {
                 "confidence": String(format: "%.2f", restoredState.confidence)
             ])
         }
+
+        // Restore manual override state
+        if let overrideDict = userDefaults.dictionary(forKey: manualOverrideKey),
+           let isActive = overrideDict["isActive"] as? Bool,
+           isActive,
+           let startTimestamp = overrideDict["startTime"] as? TimeInterval,
+           let duration = overrideDict["duration"] as? TimeInterval {
+
+            let startTime = Date(timeIntervalSince1970: startTimestamp)
+            let elapsed = Date().timeIntervalSince(startTime)
+
+            // Only restore if still within duration window
+            if elapsed < duration {
+                manualIndoorOverride = true
+                manualOverrideStartTime = startTime
+                manualOverrideDuration = duration
+
+                let remaining = Int((duration - elapsed) / 60)
+                print("♻️  [LocationManager] Manual override restored: \(remaining) minutes remaining")
+            } else {
+                // Expired - clear it
+                userDefaults.removeObject(forKey: manualOverrideKey)
+                print("♻️  [LocationManager] Manual override expired - cleared")
+            }
+        }
     }
     
-    // MARK: - Geofencing
-    
-    /// Setup geofences around nearby buildings for instant indoor/outdoor detection
+    // MARK: - Circular Geofencing (Background Wake-Up Only)
+
+    /// Setup circular geofences around nearby buildings for BACKGROUND WAKE-UP ONLY
+    /// These 30m radius geofences trigger iOS callbacks that can wake the app when suspended
+    /// They are NOT used for classification - polygon-based detection is more accurate
     func setupBuildingGeofences(buildings: [OverpassService.OverpassBuilding]) {
+        guard let currentLoc = currentLocation else { return }
+
+        // OPTIMIZATION: Skip if buildings haven't changed (same set of nearby buildings)
+        let buildingHash = buildings.prefix(maxMonitoredRegions).map { $0.id }.joined().hashValue
+        if buildingHash == lastGeofenceSetupHash && !monitoredBuildings.isEmpty {
+            return  // Skip redundant setup
+        }
+        lastGeofenceSetupHash = buildingHash
+
         // Remove old geofences
         for region in locationManager.monitoredRegions {
             if monitoredBuildings.contains(region.identifier) {
@@ -653,10 +919,8 @@ class LocationManager: NSObject, ObservableObject {
             }
         }
         monitoredBuildings.removeAll()
-        
+
         // Sort buildings by distance and take nearest ones
-        guard let currentLoc = currentLocation else { return }
-        
         let sortedBuildings = buildings
             .compactMap { building -> (building: OverpassService.OverpassBuilding, distance: Double)? in
                 guard let center = calculateBuildingCenter(building) else { return nil }
@@ -665,15 +929,13 @@ class LocationManager: NSObject, ObservableObject {
             }
             .sorted { $0.distance < $1.distance }
             .prefix(maxMonitoredRegions)
-        
-        print("🗺️  [LocationManager] Setting up \(sortedBuildings.count) building geofences")
-        
-        for (building, distance) in sortedBuildings {
+
+        for (building, _) in sortedBuildings {
             guard let center = calculateBuildingCenter(building) else { continue }
 
             let region = CLCircularRegion(
                 center: center,
-                radius: geofenceRadius, // PRIORITY 4 FIX: Now 30m (was 50m) for better precision
+                radius: geofenceRadius,
                 identifier: building.id
             )
             region.notifyOnEntry = true
@@ -681,23 +943,180 @@ class LocationManager: NSObject, ObservableObject {
 
             locationManager.startMonitoring(for: region)
             monitoredBuildings.insert(building.id)
-
-            print("   - \(building.id): \(Int(distance))m away, \(Int(geofenceRadius))m radius")
         }
+
+        print("🗺️ [LocationManager] Geofences updated: \(sortedBuildings.count) buildings monitored")
     }
     
     /// Calculate the center point of a building polygon
     private func calculateBuildingCenter(_ building: OverpassService.OverpassBuilding) -> CLLocationCoordinate2D? {
         guard !building.points.isEmpty else { return nil }
-        
+
         let latSum = building.points.reduce(0.0) { $0 + $1[0] }
         let lonSum = building.points.reduce(0.0) { $0 + $1[1] }
         let count = Double(building.points.count)
-        
+
         return CLLocationCoordinate2D(
             latitude: latSum / count,
             longitude: lonSum / count
         )
+    }
+
+    // MARK: - Polygon-Based Geofencing (Exact Boundary Detection)
+
+    /// Update polygon occupancy tracking - detects entry/exit from exact building boundaries
+    /// This provides much more accurate detection than circular geofences
+    private func updatePolygonOccupancy(coordinate: CLLocationCoordinate2D, buildings: [OverpassService.OverpassBuilding]) {
+        var newPolygons: Set<String> = []
+
+        // Check which building polygons we're currently inside
+        for building in buildings {
+            if GeometryUtils.pointInPolygon(point: [coordinate.latitude, coordinate.longitude], polygon: building.points) {
+                newPolygons.insert(building.id)
+
+                // Detect entry (wasn't in this polygon before, now we are)
+                if !currentPolygons.contains(building.id) {
+                    handlePolygonEntry(buildingId: building.id, coordinate: coordinate)
+                }
+            }
+        }
+
+        // Detect exits (was in polygon before, now we're not)
+        for oldBuildingId in currentPolygons {
+            if !newPolygons.contains(oldBuildingId) {
+                handlePolygonExit(buildingId: oldBuildingId, coordinate: coordinate)
+            }
+        }
+
+        currentPolygons = newPolygons
+    }
+
+    /// Handle polygon entry event - triggered when GPS crosses building boundary inward
+    private func handlePolygonEntry(buildingId: String, coordinate: CLLocationCoordinate2D) {
+        let now = Date()
+        polygonEntryTimestamps[buildingId] = now
+        polygonEntryPositions[buildingId] = coordinate  // Store position to validate movement at exit
+
+        DetectionLogger.logGeofence(
+            event: "POLYGON ENTRY",
+            buildingId: buildingId
+        )
+    }
+
+    /// Handle polygon exit event - triggered when GPS crosses building boundary outward
+    /// CRITICAL: Validates actual movement to prevent GPS drift from creating false exit events
+    private func handlePolygonExit(buildingId: String, coordinate: CLLocationCoordinate2D) {
+        let now = Date()
+
+        // Calculate duration inside polygon
+        let duration: TimeInterval? = polygonEntryTimestamps[buildingId].map { entryTime in
+            now.timeIntervalSince(entryTime)
+        }
+
+        // MOVEMENT VALIDATION: Check if user actually moved or if this is GPS drift
+        // If position hasn't changed significantly from entry, this is likely GPS drift, not real exit
+        if let entryPosition = polygonEntryPositions[buildingId] {
+            let movementDistance = haversineDistance(
+                from: entryPosition,
+                to: coordinate
+            )
+
+            if movementDistance < 10 {
+                // Position barely changed (<10m) - likely GPS drift, not actual exit
+                if DetectionLogger.isVerboseMode {
+                    print("⚠️ Polygon exit rejected: \(Int(movementDistance))m movement (GPS drift)")
+                }
+                return
+            }
+        }
+
+        // Valid exit - record timestamp
+        polygonExitTimestamps[buildingId] = now
+
+        DetectionLogger.logGeofence(
+            event: "POLYGON EXIT",
+            buildingId: buildingId,
+            duration: duration
+        )
+    }
+
+    // MARK: - Polygon-Based Classification Helpers
+
+    /// Check if currently inside any building polygon (absolute veto for outdoor classification)
+    /// Polygons are accurate - if GPS shows inside, user is likely inside
+    func isInsideAnyPolygon() -> Bool {
+        return !currentPolygons.isEmpty
+    }
+
+    /// Check if sustained inside polygon (>30 seconds) - strong indoor signal
+    /// Used to stop outdoor tracking when user actually enters building
+    func isInsidePolygonSustained() -> (Bool, TimeInterval?) {
+        guard let currentBuildingId = currentPolygons.first,
+              let entryTime = polygonEntryTimestamps[currentBuildingId] else {
+            return (false, nil)
+        }
+
+        let duration = Date().timeIntervalSince(entryTime)
+        return (duration > 30, duration)
+    }
+
+    /// Check if recently exited polygon (within 90 seconds) - strong outdoor signal
+    /// User just left building, likely now on sidewalk
+    func hasRecentPolygonExit() -> (Bool, TimeInterval?) {
+        let now = Date()
+
+        // Find most recent exit
+        let recentExits = polygonExitTimestamps.values.compactMap { exitTime -> TimeInterval? in
+            let timeSinceExit = now.timeIntervalSince(exitTime)
+            return timeSinceExit < 90 ? timeSinceExit : nil
+        }
+
+        if let mostRecentExit = recentExits.min() {
+            return (true, mostRecentExit)
+        }
+
+        return (false, nil)
+    }
+
+    /// Get duration inside current polygon (if any)
+    func getCurrentPolygonDuration() -> TimeInterval? {
+        guard let currentBuildingId = currentPolygons.first,
+              let entryTime = polygonEntryTimestamps[currentBuildingId] else {
+            return nil
+        }
+        return Date().timeIntervalSince(entryTime)
+    }
+
+    /// Check if floor was detected recently (strong indoor signal)
+    /// Floor data only available in multi-story buildings (indoors)
+    func hasRecentFloorDetection(within seconds: TimeInterval = 300) -> Bool {
+        guard let lastFloorTime = lastFloorDetectionTime else {
+            return false
+        }
+        return Date().timeIntervalSince(lastFloorTime) < seconds
+    }
+
+    /// Get cached nearest building distance for current location
+    /// Used by accuracy pattern tier to check proximity without async API call
+    /// Returns nil if no cached building data available
+    func getCachedNearestBuildingDistance() -> Double? {
+        guard let currentLocation = currentState else { return nil }
+
+        let latKey = Int(currentLocation.latitude * 1000)
+        let lonKey = Int(currentLocation.longitude * 1000)
+        let cacheKey = "\(latKey):\(lonKey)"
+
+        guard let cached = buildingCache[cacheKey],
+              Date().timeIntervalSince(cached.timestamp) < config.buildingCacheTTL,
+              !cached.buildings.isEmpty else {
+            return nil
+        }
+
+        let point = [currentLocation.latitude, currentLocation.longitude]
+        let distance = GeometryUtils.nearestBuildingDistance(point: point, buildings: cached.buildings)
+
+        // Filter out sentinel value for "no buildings found"
+        return distance < 999999 ? distance : nil
     }
 
     // MARK: - Private Methods
@@ -875,12 +1294,84 @@ class LocationManager: NSObject, ObservableObject {
             return tunnelState
         }
 
+        // PRIORITY 0: Manual Indoor Override (Highest Priority)
+        // Check if user has manually overridden the detection system
+        if manualIndoorOverride, let overrideTime = manualOverrideStartTime {
+            let elapsed = Date().timeIntervalSince(overrideTime)
+
+            if elapsed < manualOverrideDuration {
+                // Override still active - force indoor classification
+                let remaining = Int((manualOverrideDuration - elapsed) / 60)
+                DetectionLogger.logDetection(
+                    mode: .inside,
+                    confidence: 1.0,
+                    source: "manual_override",
+                    coordinate: coordinate,
+                    accuracy: accuracy,
+                    motion: motionState.activity?.rawValue ?? "unknown",
+                    nearestBuilding: nil
+                )
+
+                let overrideState = LocationState(
+                    latitude: coordinate.latitude,
+                    longitude: coordinate.longitude,
+                    mode: .inside,
+                    confidence: 1.0,  // 100% confidence - user confirmed
+                    timestamp: Date(),
+                    isStale: false,
+                    speed: speed,
+                    accuracy: accuracy > 0 ? accuracy : nil,
+                    activity: motionState.activity,
+                    uncertaintyReason: nil
+                )
+
+                currentState = overrideState
+                locationMode = .inside
+                confidence = 1.0
+
+                print("🏠 [LocationManager] Manual override active: \(remaining) min remaining")
+                return overrideState
+            } else {
+                // Override expired - clear it and continue with normal detection
+                Task { @MainActor in
+                    clearManualOverride()
+                }
+                print("⏰ [LocationManager] Manual override expired - resuming automatic detection")
+            }
+        }
+
         // PHASE 1 & 2: MULTI-TIER CLASSIFICATION SYSTEM
-        // Priority order: Floor > Accuracy Pattern > Geofence > Pressure > Building Data > Distance+Motion
+        // Priority order: Manual Override > Floor > Accuracy Pattern > Geofence > Pressure > Building Data > Distance+Motion
         var classification: ClassificationResult
         var signalSource: SignalSource
         var buildingFetchFailed = false  // Track if API failed
         var nearestDistance: Double = 999  // Default: far from buildings
+
+        // CRITICAL FIX (Nov 2025): Fetch buildings and update polygon state FIRST
+        // This ensures isInsideAnyPolygon() returns current data for all classification tiers
+        // Previously, accuracy pattern tier checked stale polygon data causing false outdoor indoors
+        let buildings: [OverpassService.OverpassBuilding]
+        do {
+            buildings = try await fetchNearbyBuildings(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+        } catch {
+            buildingFetchFailed = true
+            buildings = []
+            print("⚠️ [LocationManager] Building lookup failed: \(error.localizedDescription)")
+        }
+
+        // Update polygon occupancy BEFORE any classification that uses isInsideAnyPolygon()
+        updatePolygonOccupancy(coordinate: coordinate, buildings: buildings)
+
+        // Pre-calculate nearest building distance for use in all tiers
+        if !buildings.isEmpty {
+            nearestDistance = GeometryUtils.nearestBuildingDistance(
+                point: [coordinate.latitude, coordinate.longitude],
+                buildings: buildings
+            )
+        }
 
         // TIER 1: Floor detection (definitive, instant, no API)
         if let floorResult = classifyWithFloorData(location: location) {
@@ -893,7 +1384,7 @@ class LocationManager: NSObject, ObservableObject {
                 details: ["floor": location.floor?.level ?? "N/A"]
             )
         }
-        // TIER 2: Accuracy pattern (strong signal, no API)
+        // TIER 2: Accuracy pattern (strong signal, now with fresh polygon data)
         else if let patternResult = classifyWithAccuracyPattern(location: location, motion: motionState) {
             classification = patternResult
             signalSource = .accuracyPattern
@@ -904,17 +1395,9 @@ class LocationManager: NSObject, ObservableObject {
                 details: ["accuracy": accuracy > 0 ? "\(Int(accuracy))m" : "unknown"]
             )
         }
-        // TIER 3: Recent geofence event (system-level, instant)
-        else if let geofenceResult = classifyWithRecentGeofence(location: location) {
-            classification = geofenceResult
-            signalSource = .geofence
-            DetectionLogger.logSignal(
-                type: "Geofence Event",
-                result: classification.mode.rawValue,
-                confidence: classification.confidence,
-                details: ["time_since_exit": geofenceExitTimestamp.map { "\(Int(Date().timeIntervalSince($0)))s" } ?? "N/A"]
-            )
-        }
+        // TIER 3: Recent geofence event - REMOVED
+        // Circular geofences are now used ONLY for background wake-up, not classification
+        // Polygon-based geofencing provides superior accuracy with movement validation
         // TIER 4: Pressure change (transition detector, no API)
         else if let pressureResult = classifyWithPressureChange(location: location, motion: motionState) {
             classification = pressureResult
@@ -925,21 +1408,8 @@ class LocationManager: NSObject, ObservableObject {
                 confidence: classification.confidence
             )
         }
-        // TIER 5: Building data (API-dependent, now validation role)
+        // TIER 5: Building data classification (polygon already updated above)
         else {
-            // Fetch nearby buildings (gracefully handle failures)
-            let buildings: [OverpassService.OverpassBuilding]
-            do {
-                buildings = try await fetchNearbyBuildings(
-                    latitude: coordinate.latitude,
-                    longitude: coordinate.longitude
-                )
-            } catch {
-                buildingFetchFailed = true
-                buildings = []
-                print("⚠️ [LocationManager] Building lookup failed: \(error.localizedDescription)")
-            }
-
             classification = classifyLocation(
                 coordinate: coordinate,
                 buildings: buildings,
@@ -947,12 +1417,6 @@ class LocationManager: NSObject, ObservableObject {
                 buildingDataAvailable: !buildingFetchFailed
             )
             signalSource = buildingFetchFailed ? .fallback : .polygon
-
-            // Calculate nearest building distance for logging
-            nearestDistance = GeometryUtils.nearestBuildingDistance(
-                point: [coordinate.latitude, coordinate.longitude],
-                buildings: buildings
-            )
 
             DetectionLogger.logSignal(
                 type: buildingFetchFailed ? "Fallback Heuristic" : "Building Data",
@@ -963,11 +1427,11 @@ class LocationManager: NSObject, ObservableObject {
                     "nearest_distance": nearestDistance < 999 ? "\(Int(nearestDistance))m" : ">1km"
                 ]
             )
+        }
 
-            // Setup geofences for faster future transitions (only when using building data)
-            if !buildings.isEmpty {
-                setupBuildingGeofences(buildings: buildings)
-            }
+        // Setup geofences for faster future transitions (only when using building data)
+        if !buildings.isEmpty {
+            setupBuildingGeofences(buildings: buildings)
         }
         
         // Store signal source for debugging
@@ -1104,24 +1568,16 @@ class LocationManager: NSObject, ObservableObject {
             uncertaintyReason: reason
         )
 
-        // Add to history (only known modes)
-        addToHistory(newState)
+        // Add to history (only known modes) - include signal source for weighted decay
+        addToHistory(newState, signalSource: signalSource)
 
         // IMPROVED: Check if stable mode can be determined with adaptive requirements
         if newState.mode != .unknown {
             // For vehicle detection: Require higher confidence but allow single sample
             let allowSingleVehicleSample = newState.mode == .vehicle && newState.confidence >= 0.85
-            
-            // OPTIMIZATION: Allow single sample for high-confidence outdoor from recent geofence exit
-            // When user exits building (geofence), iOS gives us high-quality transition signal
-            // If confidence is ≥0.80 AND geofence exit within 60s, accept single sample
-            let recentGeofenceExit = geofenceExitTimestamp.map { Date().timeIntervalSince($0) < 60 } ?? false
-            let allowSingleGeofenceOutdoor = newState.mode == .outside && 
-                                             newState.confidence >= 0.80 && 
-                                             recentGeofenceExit
-            
+
             // Determine if we should allow single sample detection
-            let shouldAllowSingleSample = allowSingleVehicleSample || allowSingleGeofenceOutdoor
+            let shouldAllowSingleSample = allowSingleVehicleSample
             
             if let stableMode = getStableModeFromHistory(allowSingleSample: shouldAllowSingleSample) {
                 newState = LocationState(
@@ -1149,7 +1605,7 @@ class LocationManager: NSObject, ObservableObject {
                 print("🔓 [LocationManager] Mode lock released")
             } else if lock.isExpired(timestamp: Date()) {
                 modeLock = nil
-                print("⏰ [LocationManager] Mode lock expired (30min timeout)")
+                print("⏰ [LocationManager] Mode lock expired (\(Int(ModeLock.maxLockDuration/60))min timeout)")
             } else if newState.mode != lock.lockedMode {
                 // Lock prevents mode change - revert to locked mode
                 print("🔒 [LocationManager] Mode lock active - maintaining \(lock.lockedMode.rawValue) (confidence: \(String(format: "%.2f", lock.lockConfidence)))")
@@ -1186,7 +1642,25 @@ class LocationManager: NSObject, ObservableObject {
         lastCachedLocation = coordinate
 
         // Update published properties
-        self.locationMode = newState.mode
+        // UI LOGIC: Only show "outdoor" when session is actually active (outdoor lock)
+        // This ensures the UI matches the actual UV tracking state
+        let outdoorLockActive = await BackgroundTaskManager.shared.outdoorLockActive
+
+        // Determine what mode to show in UI
+        let uiMode: LocationMode
+        if newState.mode == .outside && !outdoorLockActive {
+            // Detection says outdoor, but session hasn't started yet
+            // Keep UI at previous mode (likely inside/unknown) until session activates
+            uiMode = self.locationMode  // Keep current UI mode
+        } else if outdoorLockActive && (newState.mode == .inside || newState.mode == .unknown) && newState.confidence < 0.95 {
+            // Session active but weak indoor signal - keep showing outdoor
+            uiMode = .outside
+        } else {
+            // Normal case: show actual detected mode
+            uiMode = newState.mode
+        }
+
+        self.locationMode = uiMode
         self.confidence = newState.confidence
         self.uncertaintyReason = newState.uncertaintyReason
         
@@ -1208,12 +1682,11 @@ class LocationManager: NSObject, ObservableObject {
         // Persist state for continuity
         persistState()
 
-        // Start/stop UV tracking based on mode
-        if newState.mode == .outside {
-            await startUVTracking()
-        } else {
-            stopUVTracking()
-        }
+        // NOTE: UV tracking is NOT started here - it's handled by BackgroundTaskManager.handleOutsideDetection()
+        // which is called from didUpdateLocations() after this method returns.
+        // The old startUVTracking() call here only fetched UV index but didn't activate the outdoor lock
+        // or start the UV timer, causing a "standby" bug where user was classified outdoor but not tracking.
+        // FIX (Nov 2025): Removed misleading startUVTracking()/stopUVTracking() calls.
 
         if modeChanged {
             let previousMode = currentState?.mode ?? .unknown
@@ -1315,6 +1788,27 @@ class LocationManager: NSObject, ObservableObject {
             return (.vehicle, confidence)
         }
 
+        // CRITICAL FIX: If distance is 0m or very close, treat as inside building
+        // This handles edge cases where polygon check might miss but distance is definitive
+        if nearestDistance < 2 {
+            print("🏢 [LocationManager] Very close to/inside building (\(String(format: "%.1f", nearestDistance))m) - treating as INSIDE")
+            return (.inside, 0.90)
+        }
+
+        // POLYGON-BASED GEOFENCING: Absolute veto for outdoor if inside building polygon
+        // Building polygons from OSM are accurate - if GPS shows inside, user is likely inside
+        // This check prevents GPS drift from incorrectly triggering outdoor detection
+        if isInsideAnyPolygon() {
+            let (isSustained, duration) = isInsidePolygonSustained()
+            if isSustained {
+                print("🏢 [LocationManager] Inside polygon for \(Int(duration ?? 0))s - sustained indoor detection")
+                return (.inside, 0.90)  // High confidence - sustained polygon occupancy
+            } else {
+                print("🏢 [LocationManager] Inside polygon (recent entry) - indoor detection")
+                return (.inside, 0.80)  // Good confidence - just entered polygon
+            }
+        }
+
         if nearestDistance <= config.zoneProbablyInside {
             // FIX #7: REMOVED motion transition logic - causes false positives when walking indoors
             // Walking happens indoors too (to printer, bathroom, etc.)
@@ -1333,27 +1827,75 @@ class LocationManager: NSObject, ObservableObject {
                 // Indoor: varying accuracy (GPS bouncing 20-60m)
                 let hasStableGPS = checkGPSStability()
 
-                // INDICATOR 2: Geofence entry history
-                // If we're inside geofence but no entry event fired recently, likely app started while already outside
-                let noRecentGeofenceEntry = checkNoRecentGeofenceEntry()
+                // INDICATOR 2: Polygon entry history
+                // If not inside any building polygon, likely outside
+                let notInsidePolygon = checkNoRecentPolygonEntry()
 
                 // INDICATOR 3: Sustained good accuracy
                 // If accuracy has been <25m for 60+ seconds, likely outdoor with sky visibility
                 let hasSustainedGoodAccuracy = checkSustainedGoodAccuracy()
 
+                // CRITICAL FIX: Detect "near window" scenario
+                // Stationary + excellent GPS + near/inside building = likely at desk near window
+                // This is a VERY common false positive in urban environments
+                // TIERED approach: stricter for very close, requires longer duration for moderate distance
+                let hasExcellentGPS = (accuracyHistory.last?.accuracy ?? 100) < 15
+                let stationaryDuration = getConsecutiveActivityDuration(.stationary)
+                let isVeryStationary = stationaryDuration > 120  // 2+ minutes
+                let isExtendedStationary = stationaryDuration > 300  // 5+ minutes
+
+                // TIER 1: Inside polygon = always window scenario
+                let isInsidePolygonNow = isInsideAnyPolygon()
+
+                // TIER 2: Very close (<5m) + >2min = likely ground floor window
+                // CRITICAL FIX (Nov 2025): Lowered from 8m to 5m to prevent bus stop false positives
+                // Bus stops 5-8m from buildings should be classified as outdoor
+                let isVeryCloseToBuilding = nearestDistance < 5
+
+                // TIER 3: Moderately close (5-15m) + >5min = likely upper floor window
+                let isModeratelyCloseToBuilding = nearestDistance >= 5 && nearestDistance < 15
+
+                // POLYGON ABSOLUTISM: If NOT inside polygon AND >5m from building, bias toward outdoor
+                // This prevents false indoor classification of bus stops, outdoor seating, etc.
+                let shouldApplyPolygonAbsolutism = !isInsidePolygonNow && nearestDistance >= 5
+
+                // Combined check with tiered thresholds to reduce false negatives
+                let isLikelyNearWindow = (isInsidePolygonNow && hasExcellentGPS && isVeryStationary) ||
+                                         (isVeryCloseToBuilding && hasExcellentGPS && isVeryStationary) ||
+                                         (isModeratelyCloseToBuilding && hasExcellentGPS && isExtendedStationary && !shouldApplyPolygonAbsolutism)
+
+                if isLikelyNearWindow {
+                    print("🪟 [LocationManager] NEAR WINDOW detected: Stationary >2min + excellent GPS (\(String(format: "%.1f", accuracyHistory.last?.accuracy ?? 0))m) + very close to building (\(Int(nearestDistance))m) - treating as INSIDE to avoid false positive")
+                    return (.inside, 0.85)  // INSIDE rather than UNKNOWN - high confidence indoor detection
+                }
+
+                // CRITICAL FIX: If polygon absolutism applies, allow outdoor classification
+                if shouldApplyPolygonAbsolutism && hasExcellentGPS {
+                    print("🚏 [LocationManager] OUTDOOR BUS STOP detected: NOT inside polygon + >5m from building (\(Int(nearestDistance))m) + excellent GPS - treating as outdoor despite stationary")
+                    return (.outside, 0.75)
+                }
+
                 // PRIORITY 1 FIX: Apply outdoor classification if indicators suggest outdoor
-                if hasStableGPS && accuracyHistory.last?.accuracy ?? 100 < 25 {
-                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: GPS stable + good accuracy (\(String(format: "%.1f", accuracyHistory.last?.accuracy ?? 0))m)")
+                // Check distance thresholds that avoid window false positive zones
+                let isSafeDistanceFromBuilding = nearestDistance >= 15  // Beyond window false positive range
+
+                if hasStableGPS && accuracyHistory.last?.accuracy ?? 100 < 25 && isSafeDistanceFromBuilding {
+                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: GPS stable + good accuracy (\(String(format: "%.1f", accuracyHistory.last?.accuracy ?? 0))m) + safe distance from building (\(Int(nearestDistance))m)")
                     return (.outside, 0.70)
                 }
 
-                if noRecentGeofenceEntry && accuracyHistory.last?.accuracy ?? 100 < 25 {
-                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: No geofence entry + good accuracy")
+                if notInsidePolygon && accuracyHistory.last?.accuracy ?? 100 < 25 && nearestDistance > 15 {
+                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: Not inside building polygon + good accuracy + >15m from building")
                     return (.outside, 0.70)
                 }
 
-                if hasSustainedGoodAccuracy {
-                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: Sustained good accuracy for 60+ seconds")
+                // IMPROVED: Sustained accuracy outdoor detection with balanced threshold
+                // Allow outdoor detection if:
+                // 1. Sustained good accuracy for 60+ seconds AND
+                // 2. Far enough from buildings (>15m) to avoid window false positives
+                // This catches: park benches (>15m), bus stops (>15m), sidewalk waiting (>15m)
+                if hasSustainedGoodAccuracy && isSafeDistanceFromBuilding {
+                    print("🚏 [LocationManager] STATIONARY OUTDOOR detected: Sustained good accuracy for 60+ seconds + reasonably far from buildings (\(Int(nearestDistance))m)")
                     return (.outside, 0.70)
                 }
 
@@ -1402,11 +1944,11 @@ class LocationManager: NSObject, ObservableObject {
                     }
                 }
 
-                // OPTIMIZATION: Boost confidence if geofence exit within last 60 seconds
-                let recentGeofenceExit = geofenceExitTimestamp.map { Date().timeIntervalSince($0) < 60 } ?? false
-                if recentGeofenceExit {
-                    print("🚪 [LocationManager] Recent geofence exit (<60s) + walking = high confidence outdoor")
-                    return (.outside, 0.85)  // High confidence - iOS detected building exit recently
+                // POLYGON-BASED GEOFENCING: Check for recent polygon exit (exact boundary detection)
+                let (hasPolygonExit, polygonExitTime) = hasRecentPolygonExit()
+                if hasPolygonExit, let exitTime = polygonExitTime {
+                    print("🚪 [LocationManager] Recent POLYGON exit (\(Int(exitTime))s ago) + walking = high confidence outdoor")
+                    return (.outside, 0.90)  // Very high confidence - exact boundary exit detected + walking
                 }
 
                 // PRIORITY 5 FIX: Check for parallel walking (definitive sidewalk indicator)
@@ -1483,7 +2025,8 @@ class LocationManager: NSObject, ObservableObject {
                 return (.vehicle, max(motion.vehicleConfidence, 0.85))
             }
             // High confidence outdoor detection when far from buildings
-            return (.outside, 0.85)
+            // Raised to 0.90 to meet TIER 1 threshold for stationary outdoor (park bench, beach, sunbathing)
+            return (.outside, 0.90)
         }
 
         if motion.isVehicle {
@@ -1525,77 +2068,230 @@ class LocationManager: NSObject, ObservableObject {
         // Check if just started moving (important for outdoor transition detection)
         let justStartedMoving = checkJustStartedMoving()
 
-        // IMPROVEMENT #3: Enhanced vehicle confidence with immediate detection for safety
-        // PRIORITY 3 FIX: INSTANT vehicle detection based on speed alone (3-5s response)
-        // This prevents UV exposure delay while waiting for CoreMotion automotive signal
+        // Track last significant speed (non-stop speed)
+        if avgSpeed > 2.0 {
+            lastSignificantSpeed = avgSpeed
+        }
+
+        // IMPROVED: Enhanced vehicle detection with persistence for stop-and-go driving
+        // Supports city driving with traffic lights, stop signs, and variable speeds
         var vehicleConfidence = 0.0
 
-        // TIER 1: INSTANT detection based on sustained high speed (humans can't sustain 25+ mph)
-        // Check last 5-10 seconds for sustained speed
+        // TIER 0: Check vehicle mode persistence (stop-and-go support)
+        // If we detected vehicle recently, maintain it through brief stops
+        if let lastVehicleTime = lastVehicleDetectionTime {
+            let timeSinceVehicle = now.timeIntervalSince(lastVehicleTime)
+
+            // PARKING DETECTION: Exit vehicle mode after 5+ minutes stationary with no automotive activity
+            // IMPROVED: Increased from 3 to 5 minutes to handle long drive-through waits
+            if timeSinceVehicle > 300 && avgSpeed < 0.5 && !hasVehicleActivity {
+                print("🅿️ [LocationManager] PARKING detected: 5+ min stationary, no automotive activity - exiting vehicle mode")
+                isInVehicleMode = false
+                lastVehicleDetectionTime = nil
+                vehicleModeConfirmedTime = nil
+                consecutiveStops = 0
+                lastStrongVehicleConfidence = 0.0
+            }
+            // Phase 1 Fix #3: Maintain vehicle mode for up to 5 minutes after last detection (covers stop-and-go city driving)
+            else if timeSinceVehicle <= 300 && lastStrongVehicleConfidence >= 0.85 {
+                // Check if this is a stop-and-go pattern (stopped but was recently moving fast)
+                let isStopAndGo = avgSpeed < 2.0 && lastSignificantSpeed > 5.0
+
+                if isStopAndGo {
+                    consecutiveStops += 1
+                    print("🚦 [LocationManager] Stop-and-go detected (#\(consecutiveStops)): currently stopped but was moving at \(String(format: "%.1f", lastSignificantSpeed)) m/s - maintaining vehicle mode")
+                }
+
+                // Maintain high confidence from recent vehicle detection with slower decay
+                vehicleConfidence = max(0.85, lastStrongVehicleConfidence - (timeSinceVehicle / 600.0)) // Phase 1 Fix #3: Slower decay (600s half-life instead of 240s)
+                print("🚗 [LocationManager] Vehicle mode persistence active: \(Int(timeSinceVehicle))s since last detection (confidence: \(String(format: "%.2f", vehicleConfidence)))")
+            }
+        }
+
+        // TIER 1: CoreMotion automotive activity (HIGHEST PRIORITY - accelerometer-based)
+        // iOS detects vehicle motion patterns (acceleration/braking) independent of GPS speed
+        if hasVehicleActivity {
+            let automotiveCount = activities.filter { $0 == .automotive }.count
+            let automotiveRatio = Double(automotiveCount) / Double(activities.count)
+
+            if automotiveRatio > 0.5 {
+                // 50%+ automotive samples = definitely in vehicle
+                vehicleConfidence = max(vehicleConfidence, 0.95)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.95
+                isInVehicleMode = true
+
+                DetectionLogger.log(
+                    "🚗 VEHICLE (CoreMotion): \(Int(automotiveRatio * 100))% automotive samples - HIGH CONFIDENCE",
+                    category: .motion
+                )
+            } else if avgSpeed > 3.0 {
+                // Automotive activity + moderate speed = vehicle
+                vehicleConfidence = max(vehicleConfidence, 0.90)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.90
+                isInVehicleMode = true
+
+                DetectionLogger.log(
+                    "🚗 VEHICLE (CoreMotion + speed): automotive activity with \(String(format: "%.1f", avgSpeed)) m/s",
+                    category: .motion
+                )
+            } else {
+                // Automotive activity even when stopped (engine vibrations)
+                vehicleConfidence = max(vehicleConfidence, 0.85)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.85
+            }
+        }
+
+        // TIER 2: GPS speed-based detection (CITY DRIVING thresholds - lowered from highway speeds)
+        // Check last 10 seconds for sustained speed
         let last10Seconds = recentMotion.suffix(3)  // Last 3 samples (~10 seconds)
-        if last10Seconds.count >= 3 {
+        if last10Seconds.count >= 3 && vehicleConfidence < 0.95 {
             let sustainedSpeeds = last10Seconds.map { $0.speed }
             let minSpeed = sustainedSpeeds.min() ?? 0
+            let maxSpeed = sustainedSpeeds.max() ?? 0
             let avgSustainedSpeed = sustainedSpeeds.reduce(0.0, +) / Double(sustainedSpeeds.count)
 
-            // Instant detection thresholds (based on audit recommendations)
+            // Highway driving (original high thresholds)
             if avgSustainedSpeed > 22.0 {  // >50 mph sustained
-                vehicleConfidence = 0.98
+                vehicleConfidence = max(vehicleConfidence, 0.98)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.98
+                isInVehicleMode = true
                 DetectionLogger.logMotion(
                     activity: "VEHICLE (highway)",
                     speed: avgSustainedSpeed,
                     vehicleConfidence: vehicleConfidence,
-                    details: "Instant detection: >50 mph sustained"
+                    details: "Highway speed: >50 mph sustained"
                 )
-            } else if avgSustainedSpeed > 11.0 && minSpeed > 9.0 {  // >25 mph sustained, no drops below 20 mph
-                vehicleConfidence = 0.95
+            }
+            // Fast city driving / arterial roads
+            else if avgSustainedSpeed > 11.0 && minSpeed > 5.0 {
+                vehicleConfidence = max(vehicleConfidence, 0.92)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.92
+                isInVehicleMode = true
                 DetectionLogger.logMotion(
-                    activity: "VEHICLE (sustained)",
+                    activity: "VEHICLE (city fast)",
                     speed: avgSustainedSpeed,
                     vehicleConfidence: vehicleConfidence,
-                    details: "Instant detection: sustained 25+ mph"
+                    details: "Fast city driving: 25+ mph sustained"
                 )
-            } else if avgSpeed > 10.0 {  // >22 mph average
-                vehicleConfidence = 0.90
-                DetectionLogger.logMotion(
-                    activity: "VEHICLE (rapid)",
-                    speed: avgSpeed,
-                    vehicleConfidence: vehicleConfidence,
-                    details: "Rapid detection: speed-based"
-                )
+            }
+            // IMPROVED: City driving with moderate speed (NEW - lower threshold)
+            else if avgSustainedSpeed > 6.0 && maxSpeed > 8.0 {
+                // CRITICAL FIX (Nov 2025): Enhanced cyclist exclusion
+                // CoreMotion doesn't always report .cycling for cyclists, so use additional heuristics:
+                // 1. Direct cycling activity check (most reliable when available)
+                // 2. Speed consistency check: cyclists have LOW variance, vehicles in traffic have HIGH variance
+                // 3. Running activity with high speed = likely misclassified cyclist (especially on smooth roads)
+                let hasCyclingActivity = activities.contains(.cycling)
+                let hasRunningWithHighSpeed = activities.contains(.running) && avgSustainedSpeed > 5.0
+
+                // Calculate speed variance to distinguish cyclists from vehicles
+                let speedVariance = sustainedSpeeds.map { pow($0 - avgSustainedSpeed, 2) }.reduce(0.0, +) / Double(sustainedSpeeds.count)
+                let speedStdDev = sqrt(speedVariance)
+
+                // Cyclists: Consistent speed (stdDev < 1.5 m/s at these speeds)
+                // Vehicles: Variable speed due to traffic, acceleration, braking (stdDev > 2.0 m/s)
+                let hasLowSpeedVariance = speedStdDev < 1.5
+                let isLikelyCyclist = hasCyclingActivity || hasRunningWithHighSpeed || (hasLowSpeedVariance && !hasVehicleActivity)
+
+                if isLikelyCyclist {
+                    let reason = hasCyclingActivity ? "cycling activity" :
+                                 hasRunningWithHighSpeed ? "running activity at high speed" :
+                                 "consistent speed pattern (σ=\(String(format: "%.1f", speedStdDev)))"
+                    print("🚴 [LocationManager] Likely cyclist detected (\(String(format: "%.1f", avgSustainedSpeed)) m/s, \(reason)) - NOT classifying as vehicle")
+                    vehicleConfidence = 0.0  // Explicitly reject vehicle classification
+                } else {
+                    // 6 m/s = 13.4 mph average, peak 18 mph - typical city driving
+                    vehicleConfidence = max(vehicleConfidence, 0.88)
+                    lastVehicleDetectionTime = now
+                    lastStrongVehicleConfidence = 0.88
+                    isInVehicleMode = true
+                    DetectionLogger.logMotion(
+                        activity: "VEHICLE (city moderate)",
+                        speed: avgSustainedSpeed,
+                        vehicleConfidence: vehicleConfidence,
+                        details: "City driving: 13+ mph avg, σ=\(String(format: "%.1f", speedStdDev)) (vehicle pattern)"
+                    )
+                }
+            }
+            // IMPROVED: Slow city driving / neighborhood (NEW - even lower threshold)
+            else if avgSustainedSpeed > 4.0 && maxSpeed > 6.0 {
+                // CRITICAL FIX (Nov 2025): Enhanced cyclist exclusion (same logic as above)
+                let hasCyclingActivity = activities.contains(.cycling)
+                let hasRunningWithHighSpeed = activities.contains(.running) && avgSustainedSpeed > 4.0
+
+                let speedVariance = sustainedSpeeds.map { pow($0 - avgSustainedSpeed, 2) }.reduce(0.0, +) / Double(sustainedSpeeds.count)
+                let speedStdDev = sqrt(speedVariance)
+                let hasLowSpeedVariance = speedStdDev < 1.2  // Even stricter at lower speeds
+                let isLikelyCyclist = hasCyclingActivity || hasRunningWithHighSpeed || (hasLowSpeedVariance && !hasVehicleActivity)
+
+                if isLikelyCyclist {
+                    let reason = hasCyclingActivity ? "cycling activity" :
+                                 hasRunningWithHighSpeed ? "running activity at moderate speed" :
+                                 "consistent speed pattern (σ=\(String(format: "%.1f", speedStdDev)))"
+                    print("🚴 [LocationManager] Likely cyclist detected (\(String(format: "%.1f", avgSustainedSpeed)) m/s, \(reason)) - NOT classifying as vehicle")
+                    vehicleConfidence = 0.0  // Explicitly reject vehicle classification
+                } else {
+                    // 4 m/s = 9 mph average, peak 13.4 mph - residential/slow traffic
+                    vehicleConfidence = max(vehicleConfidence, 0.82)
+                    lastVehicleDetectionTime = now
+                    lastStrongVehicleConfidence = 0.82
+                    isInVehicleMode = true
+                    DetectionLogger.logMotion(
+                        activity: "VEHICLE (slow city)",
+                        speed: avgSustainedSpeed,
+                        vehicleConfidence: vehicleConfidence,
+                        details: "Slow city driving: 9+ mph avg, σ=\(String(format: "%.1f", speedStdDev)) (vehicle pattern)"
+                    )
+                }
             }
         }
 
-        // TIER 2: CoreMotion activity confirmation (adds confidence if speed-based detection missed)
-        if !activities.isEmpty && vehicleConfidence < 0.95 {
-            let automotiveCount = activities.filter { $0 == .automotive }.count
-            let automotiveRatio = Double(automotiveCount) / Double(activities.count)
-
-            // IMPROVED: Immediate high confidence on first automotive + speed match
-            if hasVehicleActivity && avgSpeed > 8.0 {
-                // 8 m/s = 28.8 km/h - clear automotive speed
-                vehicleConfidence = max(vehicleConfidence, 0.90)
-                DetectionLogger.log(
-                    "Vehicle confirmed: automotive activity + speed match",
-                    category: .motion
-                )
-            } else if automotiveRatio > 0.7 {
-                // 70%+ of recent samples are automotive - very high confidence
-                vehicleConfidence = max(vehicleConfidence, 0.95)
-                DetectionLogger.log(
-                    "High vehicle confidence: \(Int(automotiveRatio * 100))% automotive samples",
-                    category: .motion
-                )
-            } else if hasVehicleActivity {
-                vehicleConfidence = max(vehicleConfidence, 0.90)
-            } else if avgSpeed > config.vehicleSpeedThresholdMS {
-                // Speed-based detection (less reliable, lower confidence)
-                vehicleConfidence = max(vehicleConfidence, 0.80)
+        // TIER 2.5: Very slow vehicle detection (parking garage crawl, heavy traffic)
+        // CRITICAL FIX: Catches vehicles moving 2-4 m/s (4.5-9 mph) with CoreMotion confirmation
+        if vehicleConfidence < 0.80 && hasVehicleActivity {
+            // CoreMotion says automotive but speed is very low
+            if avgSpeed > 0.3 && avgSpeed < 4.0 {
+                // Exclude walking (walking activity would override automotive)
+                if !hasWalkingActivity {
+                    vehicleConfidence = max(vehicleConfidence, 0.78)
+                    lastVehicleDetectionTime = now
+                    lastStrongVehicleConfidence = 0.78
+                    isInVehicleMode = true
+                    print("🅿️ [LocationManager] Very slow vehicle detected: \(String(format: "%.1f", avgSpeed)) m/s (parking search / heavy traffic) with automotive activity")
+                    DetectionLogger.logMotion(
+                        activity: "VEHICLE (very slow)",
+                        speed: avgSpeed,
+                        vehicleConfidence: vehicleConfidence,
+                        details: "Parking garage crawl or heavy traffic: <4 m/s with automotive activity"
+                    )
+                }
             }
-        } else if avgSpeed > config.vehicleSpeedThresholdMS && vehicleConfidence < 0.80 {
-            // No CoreMotion data, rely on speed only
-            let speedBasedConfidence = min(0.80, 0.60 + (avgSpeed - config.vehicleSpeedThresholdMS) / 20.0)
-            vehicleConfidence = speedBasedConfidence
+        }
+
+        // TIER 3: Stop-and-go pattern detection (acceleration/deceleration cycles)
+        // Detects repeated speed changes characteristic of city driving
+        if vehicleConfidence < 0.85 && recentMotion.count >= 5 {
+            let last30Seconds = recentMotion.suffix(10) // Last 30 seconds
+            let speeds = last30Seconds.map { $0.speed }
+
+            // Calculate speed variance
+            let avgSpeed30s = speeds.reduce(0.0, +) / Double(speeds.count)
+            let speedVariance = speeds.map { pow($0 - avgSpeed30s, 2) }.reduce(0.0, +) / Double(speeds.count)
+            let speedStdDev = sqrt(speedVariance)
+
+            // High variance + moderate speeds = stop-and-go traffic
+            if speedStdDev > 2.5 && avgSpeed30s > 3.0 && speeds.max() ?? 0 > 8.0 {
+                vehicleConfidence = max(vehicleConfidence, 0.85)
+                lastVehicleDetectionTime = now
+                lastStrongVehicleConfidence = 0.85
+                isInVehicleMode = true
+                print("🚦 [LocationManager] STOP-AND-GO pattern detected: high speed variance (\(String(format: "%.1f", speedStdDev)) m/s std dev), avg \(String(format: "%.1f", avgSpeed30s)) m/s - vehicle mode")
+            }
         }
 
         // Log significant motion transitions
@@ -1618,7 +2314,7 @@ class LocationManager: NSObject, ObservableObject {
             isStationary: isStationary,
             isWalking: hasWalkingActivity || (avgSpeed > 0.5 && avgSpeed < 2.0),
             isRunning: hasRunningActivity || (avgSpeed > 2.0 && avgSpeed < 5.0),
-            isVehicle: vehicleConfidence > 0.7,
+            isVehicle: vehicleConfidence > 0.85,  // Phase 1 Fix #1: Aligned with BackgroundTaskManager 0.85 threshold (was 0.80, caused zombie state)
             justStartedMoving: justStartedMoving,
             activity: activities.last,
             averageSpeed: avgSpeed,
@@ -1654,7 +2350,7 @@ class LocationManager: NSObject, ObservableObject {
         return !motionHistory.isEmpty
     }
 
-    private func addToHistory(_ state: LocationState) {
+    private func addToHistory(_ state: LocationState, signalSource: SignalSource? = nil) {
         guard state.mode != .unknown else { return }
 
         locationHistory.append(LocationHistoryEntry(
@@ -1664,7 +2360,8 @@ class LocationManager: NSObject, ObservableObject {
             latitude: state.latitude,
             longitude: state.longitude,
             accuracy: state.accuracy,
-            uncertaintyReason: state.uncertaintyReason
+            uncertaintyReason: state.uncertaintyReason,
+            signalSource: signalSource?.rawValue
         ))
 
         pruneLocationHistory()
@@ -1692,10 +2389,7 @@ class LocationManager: NSObject, ObservableObject {
         if let latest = recentReadings.last,
            latest.mode == .inside,
            latest.confidence >= 0.95 {  // Very high confidence = polygon detection
-            
-            print("🏠 [LocationManager] High-confidence inside reading (polygon detection) - immediate transition")
-            print("   Confidence: \(String(format: "%.2f", latest.confidence)), overriding outdoor walking history")
-            
+
             // Mark the timestamp when we detect polygon containment
             lastHighConfidenceInsideTimestamp = now
             
@@ -1719,11 +2413,8 @@ class LocationManager: NSObject, ObservableObject {
                 let reading = recentReadings[0]
                 // Allow single sample for vehicle OR high-confidence geofence outdoor
                 if reading.mode == .vehicle {
-                    print("🚗 [LocationManager] Single vehicle sample accepted (safety critical): confidence \(String(format: "%.2f", reading.confidence))")
                     return reading.mode
                 } else if reading.mode == .outside && reading.confidence >= 0.80 {
-                    // This must be from geofence exit (checked in caller)
-                    print("� [LocationManager] Single outdoor sample accepted (geofence exit): confidence \(String(format: "%.2f", reading.confidence))")
                     return reading.mode
                 }
             }
@@ -1738,7 +2429,6 @@ class LocationManager: NSObject, ObservableObject {
         let firstMode = lastNSamples[0].mode
 
         if lastNSamples.allSatisfy({ $0.mode == firstMode }) {
-            print("✅ [LocationManager] Consecutive samples agree on \(firstMode.rawValue)")
             return firstMode
         }
 
@@ -1775,23 +2465,38 @@ class LocationManager: NSObject, ObservableObject {
         }
         
         var votes: [LocationMode: Double] = [:]
-        
-        // IMPROVEMENT #7: Apply exponential time decay to older samples
-        // More recent samples get more weight (reduces drift persistence)
+
+        // IMPROVEMENT #7 + FIX #6 (Nov 2025): Signal-quality-weighted time decay
+        // - More recent samples get more weight (reduces drift persistence)
+        // - Definitive signals (floor, polygon) decay slower than probabilistic signals
+        // - This prevents a 30s-old floor detection from losing to fresh GPS pattern guess
         for reading in recentReadings {
             let age = now.timeIntervalSince(reading.timestamp)
-            let decayFactor = exp(-age / 60.0)  // 60s half-life
+            // Signal quality affects decay rate: higher quality = slower decay
+            let effectiveHalfLife = 60.0 * reading.signalQualityWeight
+            let decayFactor = exp(-age / effectiveHalfLife)
             let weight = reading.confidence * decayFactor
             votes[reading.mode, default: 0.0] += weight
         }
         
-        // IMPROVEMENT #NEW: Apply streak bonus for consecutive agreement
+        // IMPROVEMENT #NEW + FIX #1 (Nov 2025): Conditional streak bonus
         // Sustained pattern (e.g., walking outside) should dominate over isolated samples
+        // BUT: Disable outdoor streak bonus when there's recent vehicle evidence
+        // This prevents the outdoor streak from delaying vehicle detection when user gets into car
         let streak = getConsecutiveModeStreak()
         if streak.count >= 3 && streak.mode != .unknown {
-            let streakBonus = min(Double(streak.count) * 0.04, 0.20)  // +0.20 max for 5+ samples
-            votes[streak.mode, default: 0.0] += streakBonus
-            print("🔥 [LocationManager] Consecutive streak bonus: \(streak.mode.rawValue) × \(streak.count) samples (+\(String(format: "%.2f", streakBonus)))")
+            // Check if there's recent vehicle evidence that should override outdoor streak
+            let hasRecentVehicleEvidence = lastVehicleDetectionTime != nil &&
+                                           now.timeIntervalSince(lastVehicleDetectionTime!) < 30
+
+            // Don't apply outdoor streak bonus if we have recent vehicle evidence
+            if streak.mode == .outside && hasRecentVehicleEvidence {
+                print("🚗⚠️ [LocationManager] Outdoor streak bonus DISABLED - recent vehicle evidence (\(Int(now.timeIntervalSince(lastVehicleDetectionTime!)))s ago)")
+            } else {
+                let streakBonus = min(Double(streak.count) * 0.04, 0.20)  // +0.20 max for 5+ samples
+                votes[streak.mode, default: 0.0] += streakBonus
+                print("🔥 [LocationManager] Consecutive streak bonus: \(streak.mode.rawValue) × \(streak.count) samples (+\(String(format: "%.2f", streakBonus)))")
+            }
         }
         
         guard let (winningMode, winningScore) = votes.max(by: { $0.value < $1.value }) else {
@@ -1813,13 +2518,10 @@ class LocationManager: NSObject, ObservableObject {
             }
         }
         
-        // Log voting details
-        print("🎯 [LocationManager] Weighted voting results (with time decay):")
-        for (mode, score) in sortedVotes {
-            let marker = mode == winningMode ? "✓" : " "
-            print("   \(marker) \(mode.rawValue): \(String(format: "%.2f", score))")
+        // Log voting only in verbose mode
+        if DetectionLogger.isVerboseMode {
+            print("🎯 Voting: \(winningMode.rawValue) (\(String(format: "%.1fx", winningScore / (sortedVotes.count > 1 ? sortedVotes[1].value : 1))) margin)")
         }
-        print("   Winner: \(winningMode.rawValue) (samples: \(recentReadings.count), window: \(Int(recentWindow))s, margin: \(String(format: "%.1fx", winningScore / (sortedVotes.count > 1 ? sortedVotes[1].value : 1))))")
         
         // CRITICAL FIX: If we have a very recent high-confidence INSIDE reading (polygon detection),
         // it should override outdoor walking history. GPS can't drift INTO a polygon.
@@ -1916,16 +2618,16 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     private func stopUVTracking() {
-        uvIndex = 0
     }
     
     // MARK: - Context-Aware Detection Helpers
 
-    /// PRIORITY 7 FIX: Check if we're in initial startup phase (first 2 minutes)
-    /// Returns true if within 2 minutes of starting location tracking
+    /// PRIORITY 7 FIX: Check if we're in initial startup phase (first 1 minute)
+    /// Returns true if within 1 minute of starting location tracking
+    /// Reduced from 2 minutes to improve responsiveness while maintaining safety
     var isInStartupPhase: Bool {
         guard let startTime = trackingStartTime else { return false }
-        return Date().timeIntervalSince(startTime) < 120  // 2 minutes
+        return Date().timeIntervalSince(startTime) < 60  // 1 minute
     }
 
     /// PRIORITY 7 FIX: Get startup-adjusted confidence thresholds
@@ -2047,25 +2749,26 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     /// PRIORITY 1 FIX: Check if we're in a geofence but no recent entry event
-    /// Indicates app started while user already outside
-    private func checkNoRecentGeofenceEntry() -> Bool {
-        // Check if we're currently in any geofence
-        let inGeofence = !geofenceEntryTimestamps.isEmpty
+    /// Indicates app started while user already outside (polygon-based)
+    /// REMOVED circular geofence version - now uses polygon-based detection
+    private func checkNoRecentPolygonEntry() -> Bool {
+        // Check if we're currently NOT inside any polygons
+        let notInsidePolygon = currentPolygons.isEmpty
 
-        if !inGeofence {
-            return false  // Not in any geofence
+        if notInsidePolygon {
+            return true  // Not inside any building polygon = likely outside
         }
 
-        // Check if entry was recent (within last 60 seconds)
+        // If inside polygon, check if entry was recent (within last 60 seconds)
         let now = Date()
-        let hasRecentEntry = geofenceEntryTimestamps.values.contains { entryTime in
+        let hasRecentEntry = polygonEntryTimestamps.values.contains { entryTime in
             now.timeIntervalSince(entryTime) < 60
         }
 
-        // If in geofence but no recent entry, likely started outside
-        if inGeofence && !hasRecentEntry {
-            print("   Geofence history: ✓ In geofence but no recent entry (app started while outside)")
-            return true
+        // If in polygon but no recent entry, might have started inside
+        if !notInsidePolygon && !hasRecentEntry {
+            print("   Polygon history: Inside building but no recent entry (app started while inside)")
+            return false  // Started inside
         }
 
         return false
@@ -2084,12 +2787,33 @@ class LocationManager: NSObject, ObservableObject {
         // Check if all samples have good accuracy (<25m)
         let allGoodAccuracy = last60s.allSatisfy { $0.accuracy < 25.0 }
 
-        if allGoodAccuracy {
-            let avgAccuracy = last60s.map { $0.accuracy }.reduce(0.0, +) / Double(last60s.count)
-            print("   Sustained accuracy: ✓ Good accuracy for 60+ seconds (avg=\(String(format: "%.1f", avgAccuracy))m)")
+        return allGoodAccuracy
+    }
+
+    /// Check for sustained EXCELLENT GPS (<12m) for fast outdoor path
+    /// Returns (hasExcellent: Bool, avgAccuracy: Double, duration: TimeInterval)
+    /// Used by BackgroundTaskManager to fast-track outdoor detection when GPS is extremely good
+    func checkSustainedExcellentGPS() -> (hasExcellent: Bool, avgAccuracy: Double, duration: TimeInterval) {
+        let now = Date()
+        let recentHistory = accuracyHistory.filter {
+            now.timeIntervalSince($0.timestamp) <= 60
         }
 
-        return allGoodAccuracy
+        guard recentHistory.count >= 4 else {
+            return (false, 0, 0)
+        }
+
+        // Check if all samples have excellent accuracy (<12m)
+        let allExcellent = recentHistory.allSatisfy { $0.accuracy < 12.0 }
+
+        guard allExcellent else {
+            return (false, 0, 0)
+        }
+
+        let avgAccuracy = recentHistory.map { $0.accuracy }.reduce(0.0, +) / Double(recentHistory.count)
+        let duration = recentHistory.first.map { now.timeIntervalSince($0.timestamp) } ?? 0
+
+        return (true, avgAccuracy, duration)
     }
 
     // MARK: - Priority 5: Parallel Walking Detection Helper
@@ -2316,10 +3040,17 @@ class LocationManager: NSObject, ObservableObject {
     private func classifyWithAccuracyPattern(location: CLLocation, motion: MotionState) -> ClassificationResult? {
         // Need at least 5 samples for pattern analysis
         guard accuracyHistory.count >= 5 else { return nil }
-        
+
+        // CRITICAL FIX: Polygon veto - if inside building polygon, reject outdoor classifications
+        // This prevents "near window" false positives where excellent GPS makes us think we're outside
+        if isInsideAnyPolygon() {
+            print("🏢 [LocationManager] Accuracy pattern skipped - inside building polygon (absolute veto)")
+            return nil  // Let polygon-based classification handle this
+        }
+
         // Get recent accuracy values
         let recentAccuracies = accuracyHistory.suffix(10).map { $0.accuracy }
-        
+
         // Calculate statistics
         let avgAccuracy = recentAccuracies.reduce(0, +) / Double(recentAccuracies.count)
         let variance = recentAccuracies.map { pow($0 - avgAccuracy, 2) }.reduce(0, +) / Double(recentAccuracies.count)
@@ -2334,7 +3065,91 @@ class LocationManager: NSObject, ObservableObject {
         
         // DEFINITIVE OUTDOOR PATTERN: Low average + low fluctuation
         // GPS excels outdoors - good accuracy, stable readings
+        // BUT: Also matches "near window indoors" AND "underground with skylight/grate"
         if avgAccuracy < 12 && stdDev < 4 {
+            let stationaryDuration = getConsecutiveActivityDuration(.stationary)
+            let nearestDistance = getCachedNearestBuildingDistance()
+            let isInsidePolygon = isInsideAnyPolygon()
+
+            // CRITICAL FIX (Nov 2025): Underground/basement detection with baseline reset
+            // Underground spaces can have excellent GPS (through skylights, grates, thin ceilings)
+            // but aren't mapped in OSM polygons. Detect using:
+            // 1. Negative relative altitude (below starting point)
+            // 2. Very close to buildings but not inside polygon (likely underground beneath building)
+            // FIX: Reset baseline if user has moved >1km (prevents false positives from elevation changes)
+            if let lastPressure = pressureHistory.last, let lastAccuracy = accuracyHistory.last {
+                let relativeAltitude = lastPressure.relativeAltitude
+                let currentLocation = CLLocation(latitude: lastAccuracy.coordinate.latitude, longitude: lastAccuracy.coordinate.longitude)
+                
+                // Check if baseline needs reset (user moved >1km since last reset)
+                var shouldResetBaseline = false
+                if let baselineLocation = lastBaselineResetLocation {
+                    let baselineRef = CLLocation(latitude: baselineLocation.latitude, longitude: baselineLocation.longitude)
+                    let distanceFromBaseline = currentLocation.distance(from: baselineRef)
+                    
+                    if distanceFromBaseline > baselineResetThreshold {
+                        shouldResetBaseline = true
+                        print("📍 [LocationManager] User moved \(Int(distanceFromBaseline))m from baseline - resetting barometric baseline")
+                    }
+                }
+                
+                // Reset baseline if needed (restart altimeter)
+                if shouldResetBaseline {
+                    resetBarometricBaseline(location: lastAccuracy.coordinate)
+                }
+                
+                // Significant negative altitude (below ground level) = underground
+                // -2m threshold accounts for minor elevation changes and sensor noise
+                if relativeAltitude < -2.0 {
+                    // GPS ACCURACY OVERRIDE: If GPS is excellent AND not inside polygon, allow outdoor
+                    // This prevents false underground detection in areas with elevation changes
+                    let hasExcellentGPS = (accuracyHistory.last?.accuracy ?? 100) < 10
+                    if hasExcellentGPS && !isInsidePolygon {
+                        print("✅ [LocationManager] UNDERGROUND OVERRIDE: Negative altitude (\(String(format: "%.1f", relativeAltitude))m) BUT excellent GPS (<10m) + NOT in polygon - allowing outdoor classification")
+                        // Continue to stationary outdoor check below
+                    } else {
+                        print("🕳️ [LocationManager] UNDERGROUND DETECTED: Relative altitude \(String(format: "%.1f", relativeAltitude))m (below ground) + excellent GPS - classifying as INSIDE")
+                        return ClassificationResult(mode: .inside, confidence: 0.90, reason: nil, signalSource: .accuracyPattern)
+                    }
+                }
+            }
+
+            // EXISTING: Check for "near window" scenario before declaring outdoor
+            // If stationary with this pattern + near/inside building = possibly indoors near window
+            // Use TIERED approach to balance false positives (window) vs false negatives (bus stop)
+            if motion.isStationary && stationaryDuration > 120 {
+                // TIER 1: Inside polygon = definitely indoors (any duration)
+                if isInsidePolygon {
+                    print("🪟 [LocationManager] NEAR WINDOW DETECTED: Inside building polygon + excellent GPS - classifying as INSIDE")
+                    return ClassificationResult(mode: .inside, confidence: 0.90, reason: nil, signalSource: .accuracyPattern)
+                }
+
+                // TIER 2: Very close (<5m) + stationary >2min = likely window (ground floor or very close upper floor)
+                // CRITICAL FIX (Nov 2025): Lowered from 8m to 5m to prevent bus stop false positives
+                // 5m threshold: typical building setback + GPS drift margin
+                if let distance = nearestDistance, distance < 5 && stationaryDuration > 120 {
+                    print("🪟 [LocationManager] NEAR WINDOW DETECTED: Very close to building (\(Int(distance))m) + stationary \(Int(stationaryDuration))s + excellent GPS - classifying as INSIDE")
+                    return ClassificationResult(mode: .inside, confidence: 0.85, reason: nil, signalSource: .accuracyPattern)
+                }
+
+                // TIER 3: Moderately close (5-15m) + stationary >5min = likely window (upper floor scenario)
+                // Longer duration requirement reduces false negatives for bus stops (typically <5min wait)
+                // POLYGON ABSOLUTISM: Skip this check if NOT inside polygon to allow outdoor classification
+                if let distance = nearestDistance, distance >= 5 && distance < 15 && stationaryDuration > 300 && isInsidePolygon {
+                    print("🪟 [LocationManager] NEAR WINDOW DETECTED: Moderately close to building (\(Int(distance))m) + very stationary \(Int(stationaryDuration))s + excellent GPS - likely upper floor window, classifying as INSIDE")
+                    return ClassificationResult(mode: .inside, confidence: 0.80, reason: nil, signalSource: .accuracyPattern)
+                }
+
+                // CRITICAL FIX: If NOT inside polygon AND >5m from building, allow outdoor classification
+                if !isInsidePolygon, let distance = nearestDistance, distance >= 5 {
+                    print("🚏 [LocationManager] OUTDOOR BUS STOP detected: NOT inside polygon + \(Int(distance))m from building + excellent GPS - allowing outdoor classification")
+                    // Continue to outdoor classification below
+                }
+
+                // Stationary with excellent GPS but not matching window patterns = likely genuinely outdoors
+                print("📊 [LocationManager] Accuracy pattern: EXCELLENT GPS + stationary \(Int(stationaryDuration))s + \(nearestDistance != nil ? "\(Int(nearestDistance!))m from building" : "no building data") - allowing outdoor classification")
+            }
+
             print("📊 [LocationManager] Accuracy pattern: DEFINITIVE OUTDOOR (avg: \(String(format: "%.1f", avgAccuracy))m, σ: \(String(format: "%.1f", stdDev))m)")
             return ClassificationResult(mode: .outside, confidence: 0.85, reason: nil, signalSource: .accuracyPattern)
         }
@@ -2371,8 +3186,9 @@ class LocationManager: NSObject, ObservableObject {
         if avgAccuracy >= 20 && avgAccuracy <= 40 && stdDev >= 10 && stdDev <= 25 {
             if motion.isWalking || motion.isRunning {
                 // Walking/running with poor unstable GPS = likely dense urban outdoor
+                // FIX (Nov 2025): Raised from 0.70 to 0.80 - walking + high variance = definitely outdoor
                 print("📊 [LocationManager] Accuracy pattern: DENSE URBAN OUTDOOR (avg: \(String(format: "%.1f", avgAccuracy))m, σ: \(String(format: "%.1f", stdDev))m, moving)")
-                return ClassificationResult(mode: .outside, confidence: 0.70, reason: nil, signalSource: .accuracyPattern)
+                return ClassificationResult(mode: .outside, confidence: 0.80, reason: nil, signalSource: .accuracyPattern)
             } else if motion.isVehicle {
                 // Vehicle with poor GPS = likely urban driving
                 return ClassificationResult(mode: .vehicle, confidence: 0.75, reason: nil, signalSource: .accuracyPattern)
@@ -2384,18 +3200,20 @@ class LocationManager: NSObject, ObservableObject {
                 return nil
             }
         }
-        
-        // Pattern 3: Moderate outdoor with some multipath (15-20m avg, 5-10m stdDev)
+
+        // Pattern 3: Moderate outdoor with some multipath (12-20m avg, 4-10m stdDev)
         // Decent accuracy with moderate stability = outdoor but not ideal conditions
         if avgAccuracy >= 12 && avgAccuracy <= 20 && stdDev >= 4 && stdDev <= 10 {
             if motion.isWalking || motion.isRunning {
+                // FIX (Nov 2025): Raised from 0.75 to 0.85 - this pattern + walking is strong outdoor evidence
+                // Moderate GPS accuracy with low-moderate variance while moving = clearly outdoors
                 print("📊 [LocationManager] Accuracy pattern: MODERATE OUTDOOR (avg: \(String(format: "%.1f", avgAccuracy))m, σ: \(String(format: "%.1f", stdDev))m, moving)")
-                return ClassificationResult(mode: .outside, confidence: 0.75, reason: nil, signalSource: .accuracyPattern)
+                return ClassificationResult(mode: .outside, confidence: 0.85, reason: nil, signalSource: .accuracyPattern)
             } else if motion.isStationary {
                 // Stationary with moderate accuracy = likely outdoor (bus stop scenario)
-                // But lower confidence than definitive patterns
+                // FIX (Nov 2025): Raised from 0.65 to 0.75 for better outdoor stationary detection
                 print("📊 [LocationManager] Accuracy pattern: STATIONARY OUTDOOR (avg: \(String(format: "%.1f", avgAccuracy))m, σ: \(String(format: "%.1f", stdDev))m)")
-                return ClassificationResult(mode: .outside, confidence: 0.65, reason: nil, signalSource: .accuracyPattern)
+                return ClassificationResult(mode: .outside, confidence: 0.75, reason: nil, signalSource: .accuracyPattern)
             }
         }
         
@@ -2543,7 +3361,30 @@ class LocationManager: NSObject, ObservableObject {
             }
         }
         
+        // Track baseline location for reset detection
+        if lastBaselineResetLocation == nil {
+            Task { @MainActor in
+                if let location = self.locationManager.location {
+                    self.lastBaselineResetLocation = location.coordinate
+                    print("📍 [LocationManager] Barometric baseline established at current location")
+                }
+            }
+        }
+        
         print("🌡️  [LocationManager] Barometric pressure monitoring started")
+    }
+    
+    /// Helper: Reset barometric baseline (called when user moves >1km)
+    private func resetBarometricBaseline(location: CLLocationCoordinate2D) {
+        // Stop and restart altimeter to reset baseline
+        altimeter.stopRelativeAltitudeUpdates()
+        pressureHistory.removeAll()
+        lastBaselineResetLocation = location
+        
+        // Restart monitoring
+        startPressureMonitoring()
+        
+        print("🔄 [LocationManager] Barometric baseline reset at new location")
     }
     
     /// Helper: Stop barometric pressure monitoring
@@ -2705,11 +3546,6 @@ class LocationManager: NSObject, ObservableObject {
             signalSources.insert("accuracyPattern")
         }
 
-        // Check for geofence signal
-        if geofenceExitTimestamp != nil && Date().timeIntervalSince(geofenceExitTimestamp!) < 300 {
-            signalSources.insert("geofence")
-        }
-
         // Check for building polygon signal (need recent buildings data)
         if let loc = currentLocation {
             let coordinate = loc.coordinate
@@ -2796,57 +3632,45 @@ extension LocationManager: CLLocationManagerDelegate {
         guard let location = locations.last else { return }
 
         Task { @MainActor in
-            // DIAGNOSTIC: Log location age to detect stale GPS
             let locationAge = Date().timeIntervalSince(location.timestamp)
-            let timeSinceLastUpdate = currentLocation != nil ? Date().timeIntervalSince(currentLocation!.timestamp) : 0
-            
-            print("""
-            📍 [LocationManager] GPS Update:
-               - Coords: \(location.coordinate.latitude), \(location.coordinate.longitude)
-               - Accuracy: \(location.horizontalAccuracy)m
-               - Speed: \(location.speed >= 0 ? String(format: "%.1f m/s", location.speed) : "unknown")
-               - Age: \(String(format: "%.1f", locationAge))s
-               - Time since last: \(String(format: "%.1f", timeSinceLastUpdate))s
-            """)
-            
-            // Warn if GPS data is stale
-            if locationAge > 5 {
-                print("⚠️ [LocationManager] WARNING: GPS data is \(Int(locationAge))s old - may be cached")
-            }
-            
-            // Always update currentLocation (needed for sun times, etc)
-            currentLocation = location
-            
-            // BUT: Only process location updates if we're actively tracking
-            // This prevents battery drain when we just requested one-time location for sun times
-            guard isTracking else {
-                print("📍 [LocationManager] Location received but tracking disabled - ignoring")
+            let timeSinceLastCheck = Date().timeIntervalSince(lastCheckTimestamp)
+
+            // OPTIMIZATION: Skip very stale GPS (>10s old) on startup - wait for fresh data
+            // Exception: Process if we haven't had any location check yet
+            if locationAge > 10 && currentState != nil {
+                print("📍 [LocationManager] Skipping stale GPS (\(Int(locationAge))s old) - waiting for fresh data")
+                currentLocation = location  // Still update for sun times
                 return
             }
-            
-            // OPTIMIZATION: Process location updates with intelligent caching
-            // This is the PRIMARY background update mechanism (iOS native, reliable)
-            // No need for separate background timer - iOS handles background updates automatically
+
+            // OPTIMIZATION: Debounce rapid updates - skip if checked within 3 seconds
+            // Exception: Always process if mode might be changing (different location)
+            let distanceFromLast = currentLocation.map {
+                location.distance(from: $0)
+            } ?? Double.infinity
+
+            if timeSinceLastCheck < 3.0 && distanceFromLast < 15 && currentState != nil {
+                // Just update location without full detection
+                currentLocation = location
+                return
+            }
+
+            // Always update currentLocation (needed for sun times, etc)
+            currentLocation = location
+
+            // Only process if actively tracking
+            guard isTracking else { return }
+
             do {
                 let state = try await performLocationCheck()
-                
-                // Log for monitoring (can be removed in production for performance)
-                print("""
-                📍 [LocationManager] Location Update:
-                   - Mode: \(state.mode.rawValue)
-                   - Confidence: \(String(format: "%.2f", state.confidence))
-                   - Speed: \(state.speed.map { String(format: "%.1f m/s", $0) } ?? "unknown")
-                   - Accuracy: \(state.accuracy.map { String(format: "%.0fm", $0) } ?? "unknown")
-                   - Time: \(Date().formatted(date: .omitted, time: .standard))
-                """)
-                
+
                 // Notify background task manager of location state
                 if state.mode == .outside {
                     await BackgroundTaskManager.shared.handleOutsideDetection(location: location, state: state)
                 } else {
                     await BackgroundTaskManager.shared.handleInsideDetection(state: state)
                 }
-                
+
             } catch {
                 print("❌ [LocationManager] Location check failed: \(error)")
             }
@@ -2885,31 +3709,35 @@ extension LocationManager: CLLocationManagerDelegate {
         }
     }
     
+    /// CIRCULAR GEOFENCE CALLBACK: Wakes app in background when entering building radius
+    /// NOTE: Only used for triggering location checks, NOT for classification decisions
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         Task { @MainActor in
-            // PRIORITY 4 FIX: Track entry timestamp for time-in-geofence analysis
+            // Track entry timestamp (used only for logging/debugging, not classification)
             geofenceEntryTimestamps[region.identifier] = Date()
 
             DetectionLogger.logGeofence(
-                event: "ENTERED",
+                event: "CIRCULAR GEOFENCE ENTERED",
                 buildingId: region.identifier
             )
 
-            // Force location check - likely moved inside
+            // Wake app and trigger polygon-based classification check
             _ = try? await performLocationCheck(forceRefresh: true)
         }
     }
     
+    /// CIRCULAR GEOFENCE CALLBACK: Wakes app in background when exiting building radius
+    /// NOTE: Only used for triggering location checks, NOT for classification decisions
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         Task { @MainActor in
-            // PRIORITY 4 FIX: Analyze time spent in geofence
+            // Analyze time spent in circular geofence (logging only)
             var duration: TimeInterval? = nil
             if let entryTime = geofenceEntryTimestamps[region.identifier] {
                 duration = Date().timeIntervalSince(entryTime)
 
                 let analysis = duration! < 30 ? "likely just passing by" : "likely actual building visit"
                 DetectionLogger.log(
-                    "Time in geofence: \(Int(duration!))s - \(analysis)",
+                    "Time in circular geofence: \(Int(duration!))s - \(analysis)",
                     category: .geofence
                 )
 
@@ -2918,13 +3746,12 @@ extension LocationManager: CLLocationManagerDelegate {
             }
 
             DetectionLogger.logGeofence(
-                event: "EXITED",
+                event: "CIRCULAR GEOFENCE EXITED",
                 buildingId: region.identifier,
                 duration: duration
             )
 
-            // OPTIMIZATION: Set timestamp for 60-second confidence boost window
-            // This gives multiple samples the benefit of geofence exit context
+            // Store timestamp (kept for backwards compatibility, but not used in classification)
             geofenceExitTimestamp = Date()
 
             // IMPROVEMENT #9: Force immediate GPS update on geofence exit
