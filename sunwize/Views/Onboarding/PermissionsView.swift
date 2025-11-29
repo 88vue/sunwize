@@ -32,7 +32,7 @@ struct PermissionsView: View {
                     .font(.largeTitle)
                     .fontWeight(.bold)
 
-                Text("We need a few permissions to provide the best experience")
+                Text("Tap 'Allow' when iOS prompts you for each permission")
                     .font(.title3)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -51,14 +51,6 @@ struct PermissionsView: View {
                 )
 
                 PermissionCard(
-                    title: "Motion & Fitness",
-                    description: "Detect indoor, outdoor, and vehicle movement",
-                    icon: "figure.walk",
-                    isGranted: motionGranted,
-                    action: requestMotionPermission
-                )
-
-                PermissionCard(
                     title: "Notifications",
                     description: "Alert you about UV exposure and reminders",
                     icon: "bell.fill",
@@ -67,8 +59,16 @@ struct PermissionsView: View {
                 )
 
                 PermissionCard(
+                    title: "Motion & Fitness",
+                    description: "Detect indoor, outdoor, and vehicle movement",
+                    icon: "figure.walk",
+                    isGranted: motionGranted,
+                    action: requestMotionPermission
+                )
+
+                PermissionCard(
                     title: "Camera",
-                    description: "Capture photos for body scans",
+                    description: "Capture photos for body spots",
                     icon: "camera.fill",
                     isGranted: cameraGranted,
                     action: requestCameraPermission
@@ -107,6 +107,20 @@ struct PermissionsView: View {
         }
         .onAppear {
             checkPermissions()
+            // Auto-request notification permission if not determined
+            requestNotificationPermissionIfNeeded()
+        }
+    }
+
+    private func requestNotificationPermissionIfNeeded() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            DispatchQueue.main.async {
+                // Only auto-request if permission is not determined
+                if settings.authorizationStatus == .notDetermined {
+                    print("🔔 [PermissionsView] Auto-requesting notification permission...")
+                    requestNotificationPermission()
+                }
+            }
         }
     }
 

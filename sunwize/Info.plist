@@ -20,7 +20,7 @@
 	
 	<!-- Camera Permission -->
 	<key>NSCameraUsageDescription</key>
-	<string>Sunwize needs camera access to capture photos of skin spots for body scan tracking.</string>
+	<string>Sunwize needs camera access to capture photos of skin spots for body spot tracking.</string>
 	
 	<!-- Motion & Fitness Permission -->
 	<key>NSMotionUsageDescription</key>
@@ -28,10 +28,10 @@
 	
 	<!-- Photo Library Permission -->
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Sunwize needs access to your photo library to select images for body scan tracking.</string>
+	<string>Sunwize needs access to your photo library to select images for body spot tracking.</string>
 	
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Sunwize needs permission to save body scan photos to your photo library.</string>
+	<string>Sunwize needs permission to save body spot photos to your photo library.</string>
 	
 	<!-- Background Modes -->
 	<key>UIBackgroundModes</key>
@@ -39,7 +39,9 @@
 		<string>location</string>
 		<string>fetch</string>
 		<string>processing</string>
+		<string>remote-notification</string>
 	</array>
+	
 	
 	<!-- Background Task Identifiers -->
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
@@ -47,6 +49,20 @@
 		<string>com.sunwize.uvtracking</string>
 		<string>com.sunwize.dailymaintenance</string>
 		<string>com.sunwize.apprefresh</string>
+	</array>
+
+	<!-- Force Light Mode Only -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Light</string>
+
+	<!-- Supported Interface Orientations -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 </dict>
 </plist>

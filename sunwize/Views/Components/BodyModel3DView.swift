@@ -15,7 +15,7 @@ struct BodyModel3DView: UIViewRepresentable {
     let spotMarkers: [SpotMarker]
     let isInteractive: Bool
     let onModelTap: (SIMD3<Float>) -> Void
-    let onSpotTap: (SIMD3<Float>, String) -> Void
+    let onSpotTap: (String) -> Void
     
     @Binding var isLoading: Bool
     
@@ -46,7 +46,7 @@ struct BodyModel3DView: UIViewRepresentable {
         sceneView.addGestureRecognizer(doubleTapGesture)
         
         // Make single tap wait for double tap to fail
-        tapGesture.require(toFail: doubleTapGesture)
+        // tapGesture.require(toFail: doubleTapGesture) // Removed to allow instant single tap on markers
         
         context.coordinator.sceneView = sceneView
         
@@ -156,7 +156,8 @@ struct BodyModel3DView: UIViewRepresentable {
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
         cameraNode.camera?.fieldOfView = 60
-        cameraNode.position = SCNVector3(0, 0, 2)
+        // Move camera back to z=8 to zoom out slightly (was z=2, then z=15)
+        cameraNode.position = SCNVector3(0, 0, 8)
         cameraNode.look(at: SCNVector3(0, 0, -23))
         scene.rootNode.addChildNode(cameraNode)
     }
@@ -211,7 +212,8 @@ struct BodyModel3DView: UIViewRepresentable {
     }
     
     private func createMarkerNode(for marker: SpotMarker) -> SCNNode {
-        let geometry = SCNSphere(radius: 0.12)
+        // Increased radius from 0.12 to 0.18 (50% bigger) for better visibility and clickability
+        let geometry = SCNSphere(radius: 0.18)
         
         // Orange color like the Expo version
         let material = SCNMaterial()
@@ -251,11 +253,8 @@ struct BodyModel3DView: UIViewRepresentable {
             // Check if we tapped a marker
             if let hit = hitResults.first(where: { $0.node.name == "marker" }) {
                 // Marker positions are in model's local space, so we can use them directly
-                let position = hit.node.position
-                let coordinates = SIMD3<Float>(position.x, position.y, position.z)
-                
-                if let bodyPart = hit.node.value(forKey: "bodyPart") as? String {
-                    parent.onSpotTap(coordinates, bodyPart)
+                if let markerId = hit.node.value(forKey: "markerId") as? String {
+                    parent.onSpotTap(markerId)
                 }
             }
         }
@@ -305,8 +304,8 @@ struct BodyModel3DView_Previews: PreviewProvider {
             onModelTap: { coords in
                 print("Model tapped at: \(coords)")
             },
-            onSpotTap: { coords, bodyPart in
-                print("Spot tapped at: \(coords), body part: \(bodyPart)")
+            onSpotTap: { locationId in
+                print("Spot tapped with ID: \(locationId)")
             },
             isLoading: .constant(false)
         )

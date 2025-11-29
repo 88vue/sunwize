@@ -38,4 +38,7 @@ struct AppConfig {
 
     // MARK: - Sunscreen Settings
     static let sunscreenProtectionDuration: TimeInterval = 7200 // 2 hours
+    
+    // MARK: - Location Debounce Settings
+    static let unknownHoldDebounce: TimeInterval = 90
 }

@@ -167,30 +167,6 @@ struct GeometryUtils {
         return minDistance == Double.infinity ? 999999 : minDistance
     }
 
-    /// Calculate the area of a polygon in square meters
-    static func polygonArea(polygon: [[Double]]) -> Double {
-        guard polygon.count >= 3 else { return 0 }
-
-        var area = 0.0
-        let n = polygon.count
-
-        // Convert to projected coordinates (simple Mercator)
-        let avgLat = polygon.reduce(0.0) { $0 + $1[0] } / Double(n)
-        let cosLat = cos(avgLat * .pi / 180)
-
-        for i in 0..<n {
-            let j = (i + 1) % n
-            let x1 = polygon[i][1] * cosLat * 111319.9 // Convert lon to meters
-            let y1 = polygon[i][0] * 111319.9 // Convert lat to meters
-            let x2 = polygon[j][1] * cosLat * 111319.9
-            let y2 = polygon[j][0] * 111319.9
-
-            area += x1 * y2 - x2 * y1
-        }
-
-        return abs(area) / 2.0
-    }
-
     /// Check if a point is within a certain distance of any building
     static func isNearBuilding(
         point: [Double],

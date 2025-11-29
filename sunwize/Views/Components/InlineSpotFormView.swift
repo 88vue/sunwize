@@ -13,6 +13,8 @@ struct InlineSpotFormView: View {
     @State private var formData: SpotFormData
     @State private var showingCamera = false
     @State private var showingPhotoPicker = false
+    @State private var dragOffset: CGFloat = 0
+    @State private var keyboardHeight: CGFloat = 0
     
     #if canImport(PhotosUI)
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -31,249 +33,359 @@ struct InlineSpotFormView: View {
             bodyPart: bodyPart
         ))
     }
-
-
     
     var body: some View {
         VStack(spacing: 0) {
-            // Custom header with Cancel and Save buttons
-            HStack {
-                Button(action: onCancel) {
-                    HStack(spacing: 4) {
+            // Header
+            VStack(spacing: 0) {
+                // Drag handle
+                RoundedRectangle(cornerRadius: 9999)
+                    .fill(Color(.systemGray3))
+                    .frame(width: Layout.dragHandleWidth, height: Layout.dragHandleHeight)
+                    .padding(.top, Spacing.BottomSheet.dragHandleTop)
+                    .padding(.bottom, Spacing.BottomSheet.dragHandleBottom)
+                
+                HStack(alignment: .top) {
+                    Text("Add New Spot")
+                        .font(.system(size: Typography.title3, weight: .bold))
+                        .foregroundColor(.primary)
+                    
+                    Spacer()
+                    
+                    Button(action: onCancel) {
                         Image(systemName: "xmark")
-                            .font(.body)
-                        Text("Cancel")
+                            .font(.system(size: Typography.footnote, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: Layout.iconButtonSize, height: Layout.iconButtonSize)
+                            .background(Color(.systemGray5))
+                            .clipShape(Circle())
                     }
-                    .foregroundColor(.orange)
-                    .padding(.vertical, 12)
-                    .padding(.horizontal, 16)
                 }
-                
-                Spacer()
-                
-                Text(existingLocation == nil ? "New Spot" : "Add Log")
-                    .font(.headline)
-                
-                Spacer()
-                
-                Button(action: {
-                    onSave(formData)
-                }) {
-                    Text("Save")
-                        .fontWeight(.semibold)
-                        .foregroundColor(formData.image == nil ? .gray : .orange)
-                        .padding(.vertical, 12)
-                        .padding(.horizontal, 16)
-                }
-                .disabled(formData.image == nil)
+                .padding(.horizontal, Spacing.xl)
+                .padding(.bottom, Spacing.BottomSheet.headerBottom)
             }
-            .background(Color(.systemBackground))
-            .overlay(
-                Divider(),
-                alignment: .bottom
-            )
+            .background(Color(.systemBackground)) // Ensure it captures touches
             
-            ScrollView {
-                VStack(spacing: 20) {
-                    // Camera section
-                    VStack(spacing: 12) {
+            // Scrollable content
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Photo Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Photo")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        
                         if let image = formData.image {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 300)
-                                .cornerRadius(12)
-                                .overlay(
-                                    Button(action: { formData.image = nil }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.title2)
-                                            .foregroundColor(.white)
-                                            .background(Color.black.opacity(0.5))
-                                            .clipShape(Circle())
-                                    }
-                                    .padding(8),
-                                    alignment: .topTrailing
-                                )
+                            ZStack(alignment: .topTrailing) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(height: 176)
+                                    .clipped()
+                                    .cornerRadius(16)
+                                
+                                Button(action: { formData.image = nil }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.white)
+                                        .background(Color.black.opacity(0.5))
+                                        .clipShape(Circle())
+                                }
+                                .padding(8)
+                            }
                         } else {
-                            VStack(spacing: 16) {
-                                Image(systemName: "camera.viewfinder")
-                                    .font(.system(size: 60))
+                            VStack(spacing: 12) {
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 30))
                                     .foregroundColor(.gray)
+                                    .padding(.top, 28)
                                 
-                                Text("Take a photo of the spot")
-                                    .font(.headline)
+                                Text("Take or upload a photo")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.secondary)
                                 
-                                HStack(spacing: 20) {
+                                HStack(spacing: 12) {
                                     Button(action: { showingCamera = true }) {
-                                        Label("Camera", systemImage: "camera.fill")
-                                            .font(.subheadline)
-                                            .foregroundColor(.white)
-                                            .padding()
-                                            .background(Color.orange)
-                                            .cornerRadius(12)
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "camera.fill")
+                                                .font(.system(size: 14))
+                                            Text("Camera")
+                                                .font(.system(size: 14))
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 16)
+                                        .frame(height: 36)
+                                        .background(Color.orange)
+                                        .cornerRadius(12)
                                     }
                                     
                                     #if canImport(PhotosUI)
                                     if #available(iOS 16.0, *) {
                                         PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                                            Label("Library", systemImage: "photo.on.rectangle")
-                                                .font(.subheadline)
-                                                .foregroundColor(.white)
-                                                .padding()
-                                                .background(Color.blue)
-                                                .cornerRadius(12)
+                                            HStack(spacing: 8) {
+                                                Image(systemName: "photo.fill")
+                                                    .font(.system(size: 14))
+                                                Text("Gallery")
+                                                    .font(.system(size: 14))
+                                            }
+                                            .foregroundColor(.secondary)
+                                            .padding(.horizontal, 16)
+                                            .frame(height: 36)
+                                            .background(Color(.systemGray5))
+                                            .cornerRadius(12)
                                         }
                                     } else {
                                         Button(action: { showingPhotoPicker = true }) {
-                                            Label("Library", systemImage: "photo.on.rectangle")
-                                                .font(.subheadline)
-                                                .foregroundColor(.white)
-                                                .padding()
-                                                .background(Color.blue)
-                                                .cornerRadius(12)
+                                            HStack(spacing: 8) {
+                                                Image(systemName: "photo.fill")
+                                                    .font(.system(size: 14))
+                                                Text("Gallery")
+                                                    .font(.system(size: 14))
+                                            }
+                                            .foregroundColor(.secondary)
+                                            .padding(.horizontal, 16)
+                                            .frame(height: 36)
+                                            .background(Color(.systemGray5))
+                                            .cornerRadius(12)
                                         }
                                     }
                                     #else
                                     Button(action: { showingPhotoPicker = true }) {
-                                        Label("Library", systemImage: "photo.on.rectangle")
-                                            .font(.subheadline)
-                                            .foregroundColor(.white)
-                                            .padding()
-                                            .background(Color.blue)
-                                            .cornerRadius(12)
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "photo.fill")
+                                                .font(.system(size: 14))
+                                            Text("Gallery")
+                                                .font(.system(size: 14))
+                                        }
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal, 16)
+                                        .frame(height: 36)
+                                        .background(Color(.systemGray5))
+                                        .cornerRadius(12)
                                     }
                                     #endif
                                 }
+                                .padding(.bottom, 16)
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: 200)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(12)
+                            .frame(height: 176)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 2, dash: [5]))
+                            )
                         }
                     }
-                    .padding(.horizontal)
                     
-                    // Body part
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Body Part", systemImage: "figure.stand")
-                            .font(.headline)
+                    // Asymmetry Toggle
+                    VStack(spacing: 8) {
+                        HStack {
+                            Text("Asymmetry")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            Toggle("", isOn: $formData.asymmetry)
+                                .labelsHidden()
+                                .tint(.orange)
+                        }
                         
-                        Text(formData.bodyPart)
-                            .font(.subheadline)
-                            .padding()
+                        Text("Is one half different from the other?")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(12)
                     }
-                    .padding(.horizontal)
+                    .padding(16)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
                     
-                    // ABCDE Assessment
-                    VStack(alignment: .leading, spacing: 16) {
-                        Label("ABCDE Assessment", systemImage: "checklist")
-                            .font(.headline)
+                    // Border Selection
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Border")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
                         
-                        // Asymmetry
-                        Toggle(isOn: $formData.asymmetry) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Asymmetry")
-                                    .font(.subheadline)
-                                Text("One half unlike the other")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                        HStack(spacing: 12) {
+                            ForEach(BorderType.allCases, id: \.self) { borderType in
+                                Button(action: { formData.border = borderType }) {
+                                    Text(borderType.rawValue)
+                                        .font(.system(size: 14))
+                                        .foregroundColor(formData.border == borderType ? .white : .secondary)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 36)
+                                        .background(formData.border == borderType ? Color.orange : Color(.systemGray5))
+                                        .cornerRadius(12)
+                                }
                             }
-                        }
-                        .tint(.orange)
-                        
-                        // Border
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Border")
-                                .font(.subheadline)
-                            Picker("Border", selection: $formData.border) {
-                                Text("Regular").tag(BorderType.regular)
-                                Text("Irregular").tag(BorderType.irregular)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                        
-                        // Color
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Color")
-                                .font(.subheadline)
-                            Picker("Color", selection: $formData.color) {
-                                Text("Uniform").tag(ColorType.uniform)
-                                Text("Varied").tag(ColorType.varied)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                        
-                        // Diameter
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Diameter")
-                                    .font(.subheadline)
-                                Spacer()
-                                Text("\(Int(formData.diameter)) mm")
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(formData.diameter > 6 ? .red : .primary)
-                            }
-                            Slider(value: $formData.diameter, in: 0...10, step: 1)
-                                .tint(formData.diameter > 6 ? .red : .orange)
-                        }
-                        
-                        // Evolving
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Evolution")
-                                .font(.subheadline)
-                            Picker("Evolution", selection: $formData.evolving) {
-                                Text("Shrunk").tag(EvolvingType.shrunk)
-                                Text("Unchanged").tag(EvolvingType.unchanged)
-                                Text("Grown").tag(EvolvingType.grown)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                        
-                        // Warning if concerning features
-                        if formData.diameter > 6 || formData.evolving == .grown {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.red)
-                                Text("Consider consulting a dermatologist")
-                                    .font(.caption)
-                                    .foregroundColor(.red)
-                            }
-                            .padding()
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(8)
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(16)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
                     
-                    // Description
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Description", systemImage: "text.alignleft")
-                            .font(.headline)
+                    // Color Selection
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Color")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
                         
-                        TextField("Describe the spot", text: $formData.description)
-                            .textFieldStyle(.roundedBorder)
+                        HStack(spacing: 12) {
+                            ForEach(ColorType.allCases, id: \.self) { colorType in
+                                Button(action: { formData.color = colorType }) {
+                                    Text(colorType.rawValue)
+                                        .font(.system(size: 14))
+                                        .foregroundColor(formData.color == colorType ? .white : .secondary)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 36)
+                                        .background(formData.color == colorType ? Color.orange : Color(.systemGray5))
+                                        .cornerRadius(12)
+                                }
+                            }
+                        }
                     }
-                    .padding(.horizontal)
+                    .padding(16)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+                    
+                    // Diameter Slider
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Diameter: \(Int(formData.diameter))mm")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        
+                        Slider(value: $formData.diameter, in: 1...20, step: 1)
+                            .tint(.blue)
+                        
+                        HStack {
+                            Text("1mm")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("20mm")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(16)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+                    
+                    // Evolving Status Selection
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Evolving Status")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        
+                        HStack(spacing: 12) {
+                            ForEach(EvolvingType.allCases, id: \.self) { evolvingType in
+                                Button(action: { formData.evolving = evolvingType }) {
+                                    Text(evolvingType.rawValue)
+                                        .font(.system(size: 14))
+                                        .foregroundColor(formData.evolving == evolvingType ? .white : .secondary)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 36)
+                                        .background(formData.evolving == evolvingType ? Color.orange : Color(.systemGray5))
+                                        .cornerRadius(12)
+                                }
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
                     
                     // Notes
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Notes (Optional)", systemImage: "note.text")
-                            .font(.headline)
+                        Text("Notes (Optional)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.secondary)
                         
-                        TextEditor(text: $formData.notes)
-                            .frame(height: 100)
-                            .padding(8)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(12)
+                        ZStack(alignment: .topLeading) {
+                            if formData.notes.isEmpty {
+                                Text("Add any additional observations...")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(Color(.placeholderText))
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 16)
+                            }
+                            
+                            TextEditor(text: $formData.notes)
+                                .font(.system(size: 16))
+                                .frame(height: 106)
+                                .scrollContentBackground(.hidden)
+                                .background(Color.clear)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 8)
+                                .toolbar {
+                                    ToolbarItemGroup(placement: .keyboard) {
+                                        Spacer()
+                                        Button("Done") {
+                                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                        }
+                                    }
+                                }
+                        }
+                        .background(Color(.systemBackground))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color(.systemGray4), lineWidth: 1)
+                        )
+                        .cornerRadius(16)
                     }
-                    .padding(.horizontal)
+                    
+                    // Action Buttons
+                    HStack(spacing: 12) {
+                        Button(action: onCancel) {
+                            Text("Cancel")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .background(Color(.systemGray5))
+                                .cornerRadius(16)
+                        }
+                        
+                        Button(action: {
+                            onSave(formData)
+                        }) {
+                            Text("Save Spot")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .background(formData.image == nil ? Color.gray : Color.orange)
+                                .cornerRadius(16)
+                        }
+                        .disabled(formData.image == nil)
+                    }
+                    .padding(.bottom, 24)
                 }
-                .padding(.vertical)
+                .padding(.horizontal, 24)
             }
+        }
+        .background(Color(.systemBackground))
+        .cornerRadius(CornerRadius.lg, corners: [.topLeft, .topRight])
+        .shadow(.medium)
+        .offset(y: dragOffset)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if value.translation.height > 0 {
+                        dragOffset = value.translation.height
+                    }
+                }
+                .onEnded { value in
+                    if value.translation.height > 100 {
+                        onCancel()
+                    } else {
+                        withAnimation {
+                            dragOffset = 0
+                        }
+                    }
+                }
+        )
+        .onTapGesture {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         }
         .sheet(isPresented: $showingCamera) {
             CameraView(image: $formData.image)
@@ -290,5 +402,18 @@ struct InlineSpotFormView: View {
             }
         }
         #endif
+        .padding(.bottom, keyboardHeight)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.keyboardHeight = keyboardFrame.height
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.25)) {
+                self.keyboardHeight = 0
+            }
+        }
     }
 }

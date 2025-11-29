@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var authService: AuthenticationService
+    @StateObject private var profileViewModel = ProfileViewModelContainer()
 
     var body: some View {
         Group {
@@ -16,11 +17,32 @@ struct RootView: View {
 
             case .signedIn(let profile):
                 MainTabView()
-                    .environmentObject(ProfileViewModel(profile: profile))
+                    .environmentObject(profileViewModel.getViewModel(for: profile))
                     .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
             }
         }
         .animation(.easeInOut(duration: 0.3), value: authService.authState.id)
+    }
+}
+
+// MARK: - ProfileViewModel Container
+// Wrapper to manage ProfileViewModel lifecycle and prevent recreation on every state change
+@MainActor
+class ProfileViewModelContainer: ObservableObject {
+    private var viewModel: ProfileViewModel?
+    private var currentProfileId: UUID?
+
+    func getViewModel(for profile: Profile) -> ProfileViewModel {
+        // Only create new ViewModel if profile changed or doesn't exist
+        if viewModel == nil || currentProfileId != profile.id {
+            viewModel = ProfileViewModel(profile: profile)
+            currentProfileId = profile.id
+        } else if viewModel?.profile.id == profile.id {
+            // Update existing ViewModel with latest profile data
+            viewModel?.profile = profile
+        }
+
+        return viewModel!
     }
 }
 

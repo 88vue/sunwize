@@ -6,22 +6,15 @@ import CoreLocation
 class UVTrackingViewModel: ObservableObject {
     // UV Tracking
     @Published var currentUVIndex: Double = 0.0
+    /// Display UV index - always up to date regardless of indoor/outdoor status
+    /// Use this for UI display (UVIndexIsland). Updated every 15 minutes during daytime.
+    @Published var displayUVIndex: Double = 0.0
     @Published var sessionSED: Double = 0.0
     @Published var exposureRatio: Double = 0.0
     @Published var sessionStartTime: Date?
     @Published var uvSafeStreak: Int = 0
     @Published var uvForecast: [UVForecastData] = []
     @Published var uvHistory: [UVHistoryDay] = []
-    
-    // IMPROVEMENT: Sunscreen state now comes from BackgroundTaskManager (single source of truth)
-    var sunscreenAppliedTime: Date? {
-        BackgroundTaskManager.shared.sunscreenAppliedTime
-    }
-    
-    // Computed property: sunscreen is active if applied within protection duration
-    var sunscreenActive: Bool {
-        BackgroundTaskManager.shared.isSunscreenProtectionActive
-    }
 
     // Vitamin D Tracking
     @Published var currentVitaminD: Double = 0.0
@@ -35,7 +28,21 @@ class UVTrackingViewModel: ObservableObject {
     @Published var isUVTrackingEnabled = true
     @Published var isVitaminDTrackingEnabled = true
     @Published var locationUncertaintyReason: LocationManager.LocationUncertaintyReason?
-    
+
+    // Sunscreen Tracking
+    @Published var sunscreenActive = false {
+        didSet {
+            // Persist to UserDefaults for background access
+            UserDefaults.standard.set(sunscreenActive, forKey: "sunscreenActive")
+            if sunscreenActive {
+                UserDefaults.standard.set(sunscreenAppliedTime?.timeIntervalSince1970, forKey: "sunscreenAppliedTime")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "sunscreenAppliedTime")
+            }
+        }
+    }
+    @Published var sunscreenAppliedTime: Date?
+
     // Daytime service
     private let daytimeService = DaytimeService.shared
     var isDaytime: Bool {
@@ -53,16 +60,21 @@ class UVTrackingViewModel: ObservableObject {
     private var profile: Profile?
     private var vitaminDData: VitaminDData?
     private var updateTimer: Timer?
+    private var uvRefreshTimer: Timer?  // Timer for keeping displayUVIndex up to date
+    private var lastUVRefreshTime: Date?
     private let supabase = SupabaseManager.shared
     private let backgroundTaskManager = BackgroundTaskManager.shared  // Single source for sessions
     private var cancellables = Set<AnyCancellable>()
 
     init() {
+        // Restore sunscreen state from UserDefaults
+        restoreSunscreenState()
         setupSubscriptions()
     }
 
     deinit {
         updateTimer?.invalidate()
+        uvRefreshTimer?.invalidate()
     }
 
     // MARK: - Setup
@@ -87,7 +99,51 @@ class UVTrackingViewModel: ObservableObject {
                 self?.currentUVIndex = index
             }
             .store(in: &cancellables)
-        
+
+        BackgroundTaskManager.shared.$isUVTrackingActive
+            .sink { [weak self] active in
+                guard let self = self else { return }
+                if !active {
+                    // Session ended - clear UI state
+                    self.sessionStartTime = nil
+                    self.sessionSED = 0.0
+                    self.exposureRatio = 0.0
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to backend session state (single source of truth)
+        BackgroundTaskManager.shared.$currentSessionSED
+            .sink { [weak self] sed in
+                self?.sessionSED = sed
+            }
+            .store(in: &cancellables)
+
+        BackgroundTaskManager.shared.$currentSessionStartTime
+            .sink { [weak self] startTime in
+                self?.sessionStartTime = startTime
+            }
+            .store(in: &cancellables)
+
+        BackgroundTaskManager.shared.$currentExposureRatio
+            .sink { [weak self] ratio in
+                self?.exposureRatio = ratio
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to Vitamin D tracking state (single source of truth)
+        BackgroundTaskManager.shared.$currentVitaminD
+            .sink { [weak self] vitaminD in
+                self?.currentVitaminD = vitaminD
+            }
+            .store(in: &cancellables)
+
+        BackgroundTaskManager.shared.$vitaminDProgress
+            .sink { [weak self] progress in
+                self?.vitaminDProgress = progress
+            }
+            .store(in: &cancellables)
+
         // IMPROVEMENT: Subscribe to location updates to fetch UV forecast when location becomes available
         LocationManager.shared.$currentLocation
             .compactMap { $0 } // Only emit when location is not nil
@@ -96,24 +152,42 @@ class UVTrackingViewModel: ObservableObject {
                 let distance = loc1.distance(from: loc2)
                 return distance < 100
             }
+            .dropFirst() // Skip initial value to avoid duplicate load on startup
+            .debounce(for: .seconds(2), scheduler: DispatchQueue.main) // Debounce rapid updates
             .sink { [weak self] location in
                 guard let self = self else { return }
-                
+
                 print("📍 [UVTrackingViewModel] Location updated: \(location.coordinate.latitude), \(location.coordinate.longitude)")
-                
+
                 // Always reload forecast when location changes significantly
                 Task { @MainActor in
-                    print("� [UVTrackingViewModel] Triggering UV forecast reload...")
+                    print("🔄 [UVTrackingViewModel] Triggering UV forecast reload...")
                     await self.loadUVForecast()
                 }
             }
             .store(in: &cancellables)
         
-        // IMPROVEMENT: Subscribe to sunscreen state changes from BackgroundTaskManager
-        // This ensures UI updates when sunscreen is applied via notification actions
-        backgroundTaskManager.$sunscreenAppliedTime
+        // Subscribe to UV session end notifications to reload history
+        NotificationCenter.default.publisher(for: NSNotification.Name("UVSessionEnded"))
             .sink { [weak self] _ in
-                self?.objectWillChange.send()  // Trigger UI refresh
+                Task { @MainActor in
+                    print("📊 [UVTrackingViewModel] UV session ended - reloading history")
+                    await self?.loadHistory()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to day change notifications (midnight reset)
+        NotificationCenter.default.publisher(for: NSNotification.Name("DayChanged"))
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    print("🌅 [UVTrackingViewModel] Day changed - resetting and reloading")
+                    self?.currentVitaminD = 0.0
+                    self?.vitaminDProgress = 0.0
+                    self?.sessionSED = 0.0
+                    self?.exposureRatio = 0.0
+                    await self?.loadHistory()
+                }
             }
             .store(in: &cancellables)
     }
@@ -122,14 +196,15 @@ class UVTrackingViewModel: ObservableObject {
         self.profile = profile
         loadUserData()
         startUpdateTimer()
-        
+        startUVRefreshTimer()  // Start periodic UV refresh for display
+
         // Initialize sun times if needed (will skip if already updated today)
         Task {
             if daytimeService.shouldUpdateSunTimes(),
                let location = LocationManager.shared.currentLocation {
                 await daytimeService.updateSunTimes(location: location)
             }
-            
+
             // Start/stop location tracking based on daytime status
             if daytimeService.isDaytime {
                 if !LocationManager.shared.isTracking {
@@ -149,39 +224,29 @@ class UVTrackingViewModel: ObservableObject {
     func stopTracking() {
         updateTimer?.invalidate()
         updateTimer = nil
-        
+        uvRefreshTimer?.invalidate()
+        uvRefreshTimer = nil
+
         // Stop location tracking when view disappears
         if LocationManager.shared.isTracking {
             LocationManager.shared.stopLocationUpdates()
             print("🛑 [UVTracking] Stopped location tracking")
         }
-        
+
         // Session management now handled by BackgroundTaskManager
     }
 
     // MARK: - Location Mode Handling
 
     private func handleLocationModeChange(_ mode: LocationMode) {
-        // IMPROVEMENT: BackgroundTaskManager now handles session lifecycle
-        // ViewModel just observes and updates UI state
-        Task {
-            switch mode {
-            case .outside:
-                // Session managed by BackgroundTaskManager
-                if sessionStartTime == nil {
-                    sessionStartTime = Date()
-                }
-            case .inside, .vehicle, .unknown:
-                // Session ended by BackgroundTaskManager
-                sessionStartTime = nil
-                sessionSED = 0.0
-                exposureRatio = 0.0
-            }
-        }
+        // BackgroundTaskManager handles all session lifecycle
+        // ViewModel subscribes to published session state - no action needed here
+        // This method kept for potential future UI-specific location mode handling
     }
 
     // MARK: - UV Session Management (Removed - now handled by BackgroundTaskManager)
     // Sessions are managed centrally to avoid conflicts between foreground/background
+    // UI state synchronized via Combine subscriptions to BackgroundTaskManager published properties
 
     // MARK: - Update Timer
 
@@ -209,55 +274,105 @@ class UVTrackingViewModel: ObservableObject {
     }
 
     private func updateTracking() async {
-        guard let profile = profile else { return }
+        // UV exposure tracking now handled entirely by BackgroundTaskManager
+        // UI automatically updates via Combine subscriptions to published properties
+        // This timer now only handles:
+        // 1. Sun times updates (once per day)
+        // 2. Stopping location tracking at sunset
 
-        // Update UV exposure
-        if LocationManager.shared.locationMode == .outside && !sunscreenActive {
-            let timeElapsed = Date().timeIntervalSince(sessionStartTime ?? Date())
-            let sedIncrement = UVCalculations.calculateSED(
-                uvIndex: currentUVIndex,
-                exposureSeconds: min(timeElapsed, 60)
-            )
-            sessionSED += sedIncrement
-            exposureRatio = UVCalculations.calculateExposureRatio(
-                sessionSED: sessionSED,
-                userMED: profile.med
-            )
+        // Note: Vitamin D tracking is also handled by BackgroundTaskManager
+        // Frontend only displays the data, doesn't calculate it
+    }
 
-            // Update Vitamin D
-            if isVitaminDTrackingEnabled {
-                let vitaminDIncrement = VitaminDCalculations.calculateVitaminD(
-                    uvIndex: currentUVIndex,
-                    exposureSeconds: min(timeElapsed, 60),
-                    bodyExposureFactor: bodyExposureFactor,
-                    skinType: profile.skinType,
-                    latitude: LocationManager.shared.currentLocation?.coordinate.latitude ?? 0,
-                    date: Date()
-                )
-                currentVitaminD += vitaminDIncrement
-                vitaminDProgress = currentVitaminD / vitaminDTarget
+    // MARK: - UV Display Refresh Timer
+
+    /// Starts a timer that refreshes displayUVIndex every 15 minutes during daytime
+    /// This ensures the UV Index Island always shows current data, even when indoors
+    private func startUVRefreshTimer() {
+        // Refresh every 15 minutes (matches cache duration)
+        uvRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+
+                // Only refresh during daytime to save battery/API calls
+                if self.daytimeService.isDaytime {
+                    await self.refreshDisplayUVIndex()
+                }
             }
+        }
+
+        // Also do an immediate refresh on start
+        Task {
+            await refreshDisplayUVIndex()
+        }
+    }
+
+    /// Refreshes the displayUVIndex from the API
+    /// Uses the combined endpoint to also update forecast
+    private func refreshDisplayUVIndex() async {
+        guard let location = LocationManager.shared.currentLocation else {
+            print("⚠️ [UVTrackingViewModel] Cannot refresh UV: Location not available")
+            return
+        }
+
+        // Check if we need to refresh (avoid redundant calls)
+        if let lastRefresh = lastUVRefreshTime,
+           Date().timeIntervalSince(lastRefresh) < 840 {  // 14 minutes (slightly under cache)
+            print("⏳ [UVTrackingViewModel] UV refresh skipped - recently updated")
+            return
+        }
+
+        do {
+            let uvData = try await WeatherService.shared.getUVDataWithForecast(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude
+            )
+
+            displayUVIndex = uvData.currentUV
+            uvForecast = uvData.forecast
+            lastUVRefreshTime = Date()
+
+            print("🌤️ [UVTrackingViewModel] Display UV refreshed: \(String(format: "%.1f", uvData.currentUV)) (\(uvData.forecast.count) forecast points)")
+
+            // Force UI update
+            objectWillChange.send()
+        } catch {
+            print("❌ [UVTrackingViewModel] Failed to refresh display UV: \(error)")
         }
     }
 
     // MARK: - User Actions
+    // MARK: - Sunscreen Tracking
 
-    func applySunscreen() {
-        // IMPROVEMENT: Delegate to BackgroundTaskManager (single source of truth)
-        Task {
-            await backgroundTaskManager.applySunscreen()
-            // UI will update automatically via publisher subscription
+    private func restoreSunscreenState() {
+        // Restore from UserDefaults
+        let isSunscreenActive = UserDefaults.standard.bool(forKey: "sunscreenActive")
+
+        if isSunscreenActive, let appliedTimeInterval = UserDefaults.standard.object(forKey: "sunscreenAppliedTime") as? TimeInterval {
+            let appliedTime = Date(timeIntervalSince1970: appliedTimeInterval)
+            let elapsed = Date().timeIntervalSince(appliedTime)
+
+            // Check if sunscreen is still valid (within protection duration)
+            if elapsed < AppConfig.sunscreenProtectionDuration {
+                sunscreenActive = true
+                sunscreenAppliedTime = appliedTime
+                print("☀️ [UVTrackingViewModel] Restored sunscreen state: \(Int((AppConfig.sunscreenProtectionDuration - elapsed) / 60)) minutes remaining")
+            } else {
+                // Expired - clear it
+                clearExpiredSunscreen()
+                print("⏰ [UVTrackingViewModel] Sunscreen expired - cleared state")
+            }
         }
     }
-    
+
+    func applySunscreen() {
+        sunscreenActive = true
+        sunscreenAppliedTime = Date()
+    }
+
     func clearExpiredSunscreen() {
-        // Only clear if actually expired
-        guard let appliedTime = sunscreenAppliedTime,
-              Date().timeIntervalSince(appliedTime) >= AppConfig.sunscreenProtectionDuration else {
-            return
-        }
-        backgroundTaskManager.sunscreenAppliedTime = nil
-        print("🧴 [UVTrackingViewModel] Sunscreen protection expired and cleared")
+        sunscreenActive = false
+        sunscreenAppliedTime = nil
     }
 
     func updateBodyExposure(_ factor: Double) {
@@ -273,6 +388,24 @@ class UVTrackingViewModel: ObservableObject {
         Task {
             await updateVitaminDData()
         }
+    }
+
+    // MARK: - Manual Override
+
+    func setManualIndoorOverride(duration: TimeInterval = 900) {
+        LocationManager.shared.setManualIndoorOverride(duration: duration)
+    }
+
+    func clearManualOverride() {
+        LocationManager.shared.clearManualOverride()
+    }
+
+    var isManualOverrideActive: Bool {
+        LocationManager.shared.isManualOverrideActive
+    }
+
+    var manualOverrideRemainingTime: TimeInterval? {
+        LocationManager.shared.manualOverrideRemainingTime
     }
 
     // MARK: - Data Loading
@@ -316,24 +449,28 @@ class UVTrackingViewModel: ObservableObject {
             return
         }
 
-        print("📊 [UVTrackingViewModel] Loading UV forecast for location: \(location.coordinate.latitude), \(location.coordinate.longitude)")
-        
+        print("📊 [UVTrackingViewModel] Loading UV data for location: \(location.coordinate.latitude), \(location.coordinate.longitude)")
+
         do {
-            let forecast = try await WeatherService.shared.getUVForecast(
+            // Use combined API to get both current UV and forecast in one call
+            let uvData = try await WeatherService.shared.getUVDataWithForecast(
                 latitude: location.coordinate.latitude,
                 longitude: location.coordinate.longitude
             )
-            uvForecast = forecast
-            print("✅ [UVTrackingViewModel] UV forecast loaded: \(forecast.count) data points")
-            
+            displayUVIndex = uvData.currentUV
+            uvForecast = uvData.forecast
+            lastUVRefreshTime = Date()
+
+            print("✅ [UVTrackingViewModel] UV data loaded: UV=\(String(format: "%.1f", uvData.currentUV)), \(uvData.forecast.count) forecast points")
+
             // Force UI update
             objectWillChange.send()
         } catch {
-            print("❌ [UVTrackingViewModel] Error loading UV forecast: \(error)")
+            print("❌ [UVTrackingViewModel] Error loading UV data: \(error)")
             print("   Error details: \(error.localizedDescription)")
         }
     }
-    
+
     // Public method to retry loading forecast from UI
     func retryLoadForecast() async {
         await loadUVForecast()
@@ -343,16 +480,34 @@ class UVTrackingViewModel: ObservableObject {
         guard let userId = profile?.id else { return }
 
         // Load last 7 days of UV history
-        let endDate = Date()
-        let startDate = Calendar.current.date(byAdding: .day, value: -6, to: endDate) ?? endDate
+        let calendar = Calendar.current
+        let endDate = calendar.startOfDay(for: Date())
+        let startDate = calendar.date(byAdding: .day, value: -6, to: endDate) ?? endDate
 
         do {
-            let sessions = try await supabase.getUserSessions(userId: userId, date: Date())
-            // Process sessions into history format
-            // This is simplified - you'd group by day and calculate daily totals
-            uvHistory = processUVHistory(sessions: sessions)
+            // Load UV sessions for the date range
+            let sessions = try await supabase.getUserSessionsInRange(
+                userId: userId,
+                startDate: startDate,
+                endDate: endDate
+            )
+            uvHistory = processUVHistory(sessions: sessions, startDate: startDate, endDate: endDate)
+            print("✅ [UVTrackingViewModel] Loaded UV history: \(uvHistory.count) days")
         } catch {
-            print("Error loading UV history: \(error)")
+            print("❌ [UVTrackingViewModel] Error loading UV history: \(error)")
+        }
+
+        // Load Vitamin D history for the date range
+        do {
+            let vitaminDData = try await supabase.getVitaminDDataInRange(
+                userId: userId,
+                startDate: startDate,
+                endDate: endDate
+            )
+            vitaminDHistory = processVitaminDHistory(vitaminDData: vitaminDData, startDate: startDate, endDate: endDate)
+            print("✅ [UVTrackingViewModel] Loaded Vitamin D history: \(vitaminDHistory.count) days")
+        } catch {
+            print("❌ [UVTrackingViewModel] Error loading Vitamin D history: \(error)")
         }
     }
 
@@ -373,27 +528,62 @@ class UVTrackingViewModel: ObservableObject {
 
     // MARK: - Helpers
 
-    private func processUVHistory(sessions: [UVSession]) -> [UVHistoryDay] {
-        // Group sessions by day and create history entries
-        // This is a simplified implementation
+    private func processUVHistory(sessions: [UVSession], startDate: Date, endDate: Date) -> [UVHistoryDay] {
+        // Group sessions by day and create history entries for all 7 days
         var history: [UVHistoryDay] = []
+        let calendar = Calendar.current
 
-        for day in 0..<7 {
-            if let date = Calendar.current.date(byAdding: .day, value: -day, to: Date()) {
-                let daySessions = sessions.filter { Calendar.current.isDate($0.date, inSameDayAs: date) }
-                let totalSED = daySessions.reduce(0) { $0 + $1.sessionSED }
-                let isSafe = totalSED < Double(profile?.med ?? 400) / 100.0
+        // Generate all dates in the range
+        var currentDate = startDate
+        while currentDate <= endDate {
+            let daySessions = sessions.filter { calendar.isDate($0.date, inSameDayAs: currentDate) }
+            let totalSED = daySessions.reduce(0) { $0 + $1.sessionSED }
+            let medInSED = Double(profile?.med ?? 300) / 100.0
+            let isSafe = totalSED < medInSED
 
-                history.append(UVHistoryDay(
-                    date: date,
-                    totalSED: totalSED,
-                    isSafe: isSafe,
-                    sessionCount: daySessions.count
-                ))
-            }
+            history.append(UVHistoryDay(
+                date: currentDate,
+                totalSED: totalSED,
+                isSafe: isSafe,
+                sessionCount: daySessions.count
+            ))
+
+            // Move to next day
+            currentDate = calendar.date(byAdding: .day, value: 1, to: currentDate) ?? currentDate
         }
 
-        return history.reversed()
+        return history
+    }
+
+    private func processVitaminDHistory(vitaminDData: [VitaminDData], startDate: Date, endDate: Date) -> [VitaminDHistoryDay] {
+        // Create history entries for all 7 days
+        var history: [VitaminDHistoryDay] = []
+        let calendar = Calendar.current
+
+        // Generate all dates in the range
+        var currentDate = startDate
+        while currentDate <= endDate {
+            // Find vitamin D data for this day
+            if let dayData = vitaminDData.first(where: { calendar.isDate($0.date, inSameDayAs: currentDate) }) {
+                history.append(VitaminDHistoryDay(
+                    date: currentDate,
+                    totalIU: dayData.totalIU,
+                    targetReached: dayData.targetReached
+                ))
+            } else {
+                // No data for this day - show 0 IU
+                history.append(VitaminDHistoryDay(
+                    date: currentDate,
+                    totalIU: 0,
+                    targetReached: false
+                ))
+            }
+
+            // Move to next day
+            currentDate = calendar.date(byAdding: .day, value: 1, to: currentDate) ?? currentDate
+        }
+
+        return history
     }
 }
 

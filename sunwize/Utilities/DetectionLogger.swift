@@ -2,7 +2,7 @@ import Foundation
 import CoreLocation
 
 /// Structured logging system for indoor/outdoor/vehicle detection debugging
-/// Provides consistent, filterable logs with context and timing information
+/// Focused on essential detection information for testing and debugging
 class DetectionLogger {
 
     // MARK: - Log Categories
@@ -33,9 +33,14 @@ class DetectionLogger {
     static var isVerboseMode = false
     static var enabledCategories: Set<Category> = Set(Category.allCases)
 
+    // MARK: - State Tracking for Deduplication
+    private static var lastLoggedMode: LocationMode?
+    private static var lastLoggedConfidence: Double = 0
+    private static var lastLogTime: Date = .distantPast
+
     // MARK: - Core Logging Methods
 
-    /// Log a detection decision with full context
+    /// Log a detection decision - concise single line unless mode changed
     static func logDetection(
         mode: LocationMode,
         confidence: Double,
@@ -48,35 +53,36 @@ class DetectionLogger {
     ) {
         guard shouldLog(.detection) else { return }
 
-        var message = """
+        let now = Date()
+        let timeSinceLastLog = now.timeIntervalSince(lastLogTime)
+        let modeChanged = mode != lastLoggedMode
+        let significantConfidenceChange = abs(confidence - lastLoggedConfidence) > 0.1
 
-        ═══════════════════════════════════════════════════════════════
-        🎯 DETECTION RESULT
-        ═══════════════════════════════════════════════════════════════
-        Mode:              \(mode.rawValue.uppercased())
-        Confidence:        \(formatConfidence(confidence))
-        Signal Source:     \(source)
-        ───────────────────────────────────────────────────────────────
-        Location:          \(formatCoordinate(coordinate))
-        GPS Accuracy:      \(accuracy.map { formatAccuracy($0) } ?? "N/A")
-        Motion:            \(motion)
-        Nearest Building:  \(nearestBuilding.map { formatDistance($0) } ?? "N/A")
-        """
-
-        if let reasoning = reasoning {
-            message += """
-
-            ───────────────────────────────────────────────────────────────
-            Reasoning:         \(reasoning)
-            """
+        // OPTIMIZATION: Only log if mode changed, confidence changed significantly, or >30s passed
+        guard modeChanged || significantConfidenceChange || timeSinceLastLog > 30 else {
+            return
         }
 
-        message += "\n═══════════════════════════════════════════════════════════════\n"
+        lastLoggedMode = mode
+        lastLoggedConfidence = confidence
+        lastLogTime = now
 
-        print(message)
+        // Concise single-line format for stable states
+        let accuracyStr = accuracy.map { "\(Int($0))m" } ?? "?"
+        let buildingStr = nearestBuilding.map { "\(Int($0))m" } ?? "?"
+        let confidenceIcon = confidence >= 0.80 ? "🟢" : confidence >= 0.60 ? "🟡" : "🔴"
+
+        if modeChanged {
+            // Full details on mode change
+            print("🎯 [\(mode.rawValue.uppercased())] \(confidenceIcon)\(Int(confidence*100))% | src:\(source) | GPS:\(accuracyStr) | bldg:\(buildingStr) | \(motion)")
+        } else {
+            // Brief update for same mode
+            print("🎯 [\(mode.rawValue)] \(confidenceIcon)\(Int(confidence*100))% | \(source)")
+        }
     }
 
     /// Log a signal evaluation (GPS pattern, floor, pressure, etc.)
+    /// Only logs high-confidence signals or in verbose mode
     static func logSignal(
         type: String,
         result: String,
@@ -85,17 +91,13 @@ class DetectionLogger {
     ) {
         guard shouldLog(.signal) else { return }
 
-        var message = "📡 [\(Category.signal.rawValue)] \(type): \(result)"
-
-        if let confidence = confidence {
-            message += " (confidence: \(formatConfidence(confidence)))"
+        // OPTIMIZATION: Only log signals with high confidence or in verbose mode
+        if let conf = confidence, conf < 0.75 && !isVerboseMode {
+            return
         }
 
-        if let details = details, !details.isEmpty {
-            message += "\n   Details: \(formatDetails(details))"
-        }
-
-        print(message)
+        let confStr = confidence.map { "(\(Int($0 * 100))%)" } ?? ""
+        print("📡 \(type): \(result) \(confStr)")
     }
 
     /// Log a mode transition with before/after context
@@ -108,6 +110,9 @@ class DetectionLogger {
     ) {
         guard shouldLog(.transition) else { return }
 
+        // Skip logging same-mode "transitions" - these are noise
+        guard from != to else { return }
+
         let durationStr = duration.map { " (was \(from.rawValue) for \(formatDuration($0)))" } ?? ""
 
         print("""
@@ -117,7 +122,7 @@ class DetectionLogger {
         """)
     }
 
-    /// Log a geofence event
+    /// Log a geofence event - concise format
     static func logGeofence(
         event: String,
         buildingId: String,
@@ -126,17 +131,10 @@ class DetectionLogger {
     ) {
         guard shouldLog(.geofence) else { return }
 
-        var message = "📍 [\(Category.geofence.rawValue)] \(event): Building \(buildingId)"
-
-        if let duration = duration {
-            message += "\n   Duration in geofence: \(formatDuration(duration))"
-        }
-
-        if let distance = distance {
-            message += "\n   Distance from building: \(formatDistance(distance))"
-        }
-
-        print(message)
+        let durationStr = duration.map { " (\(Int($0))s)" } ?? ""
+        // Shorten building ID (way:981493268 -> ...3268)
+        let shortId = buildingId.count > 8 ? "..." + buildingId.suffix(4) : buildingId
+        print("📍 \(event): \(shortId)\(durationStr)")
     }
 
     /// Log motion analysis results
@@ -161,7 +159,7 @@ class DetectionLogger {
         print(message)
     }
 
-    /// Log UV tracking events
+    /// Log UV tracking events - concise format
     static func logUVTracking(
         action: String,
         mode: LocationMode,
@@ -171,19 +169,9 @@ class DetectionLogger {
     ) {
         guard shouldLog(.uvTracking) else { return }
 
-        var message = "☀️ [\(Category.uvTracking.rawValue)] \(action.uppercased())"
-        message += "\n   Mode:       \(mode.rawValue)"
-        message += "\n   Confidence: \(formatConfidence(confidence))"
-
-        if let uvIndex = uvIndex {
-            message += "\n   UV Index:   \(String(format: "%.1f", uvIndex))"
-        }
-
-        if let reason = reason {
-            message += "\n   Reason:     \(reason)"
-        }
-
-        print(message)
+        let uvStr = uvIndex.map { " UV:\(String(format: "%.1f", $0))" } ?? ""
+        let reasonStr = reason.map { " - \($0)" } ?? ""
+        print("☀️ UV \(action.uppercased()): \(mode.rawValue) (\(Int(confidence*100))%)\(uvStr)\(reasonStr)")
     }
 
     /// Log state management events (drift, lock, tunnel)
