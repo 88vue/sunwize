@@ -27,7 +27,7 @@ class UVTrackingViewModel: ObservableObject {
     // Settings
     @Published var isUVTrackingEnabled = true
     @Published var isVitaminDTrackingEnabled = true
-    @Published var locationUncertaintyReason: LocationManager.LocationUncertaintyReason?
+    @Published var locationUncertaintyReason: LocationUncertaintyReason?
 
     // Sunscreen Tracking
     @Published var sunscreenActive = false {

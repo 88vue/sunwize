@@ -270,15 +270,4 @@ class DetectionLogger {
     }
 }
 
-// MARK: - Extensions
-
-extension LocationMode {
-    var emoji: String {
-        switch self {
-        case .inside: return "🏠"
-        case .outside: return "🌳"
-        case .vehicle: return "🚗"
-        case .unknown: return "❓"
-        }
-    }
-}
+// Note: LocationMode.emoji is now defined in DetectionTypes.swift

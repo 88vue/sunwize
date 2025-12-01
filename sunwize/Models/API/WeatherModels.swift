@@ -99,15 +99,8 @@ struct SunTimes: Codable {
     }
 }
 
-// MARK: - Location Mode
-enum LocationMode: String, Codable {
-    case inside = "inside"
-    case outside = "outside"
-    case vehicle = "vehicle"
-    case unknown = "unknown"
-}
-
 // MARK: - UV Index Level
+// Note: LocationMode is now defined in DetectionTypes.swift
 enum UVIndexLevel: CaseIterable {
     case low        // 0-2
     case moderate   // 3-5
